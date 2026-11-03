@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Bahnschmerz-Logo: trauriger Zug mit Pflaster, Träne und Uhr (eigene Grafik) -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group android:scaleX="0.8" android:scaleY="0.8" android:pivotX="54" android:pivotY="54">
+        <!-- Gleis -->
+        <path android:strokeColor="#3A1014" android:strokeAlpha="0.6" android:strokeWidth="3"
+            android:strokeLineCap="round" android:pathData="M24,80h60" />
+        <!-- Räder -->
+        <path android:fillColor="#3A1014" android:pathData="M39,75a4,4 0 1,0 8,0a4,4 0 1,0 -8,0M61,75a4,4 0 1,0 8,0a4,4 0 1,0 -8,0" />
+        <!-- Stromabnehmer -->
+        <path android:strokeColor="#3A1014" android:strokeWidth="2.2" android:strokeLineCap="round"
+            android:strokeLineJoin="round" android:pathData="M48,27L54,20L60,27M50,19.5H58" />
+        <!-- Zugkörper -->
+        <path android:fillColor="#FFFFFF"
+            android:pathData="M44,27h20a11,11 0 0,1 11,11v25a11,11 0 0,1 -11,11h-20a11,11 0 0,1 -11,-11v-25a11,11 0 0,1 11,-11z" />
+        <!-- Frontscheibe -->
+        <path android:fillColor="#3A1014"
+            android:pathData="M42,33h24a4,4 0 0,1 4,4v7a4,4 0 0,1 -4,4h-24a4,4 0 0,1 -4,-4v-7a4,4 0 0,1 4,-4z" />
+        <!-- Augen -->
+        <path android:fillColor="#3A1014" android:pathData="M42.4,56a2.6,2.6 0 1,0 5.2,0a2.6,2.6 0 1,0 -5.2,0M60.4,56a2.6,2.6 0 1,0 5.2,0a2.6,2.6 0 1,0 -5.2,0" />
+        <!-- traurige Brauen -->
+        <path android:strokeColor="#3A1014" android:strokeWidth="2" android:strokeLineCap="round"
+            android:pathData="M41,53.8L48,51.2M67,53.8L60,51.2" />
+        <!-- Mund -->
+        <path android:strokeColor="#3A1014" android:strokeWidth="2.4" android:strokeLineCap="round"
+            android:pathData="M47,67Q54,61.5 61,67" />
+        <!-- Scheinwerfer -->
+        <path android:fillColor="#FFB300" android:pathData="M36.3,70a2.2,2.2 0 1,0 4.4,0a2.2,2.2 0 1,0 -4.4,0M67.3,70a2.2,2.2 0 1,0 4.4,0a2.2,2.2 0 1,0 -4.4,0" />
+        <!-- Träne -->
+        <path android:fillColor="#4FC3F7"
+            android:pathData="M65,59.5C65,59.5 61.8,64 61.8,65.8A3.2,3.2 0,0 0 68.2,65.8C68.2,64 65,59.5 65,59.5Z" />
+        <!-- Pflaster -->
+        <group android:rotation="-35" android:pivotX="38" android:pivotY="31">
+            <path android:fillColor="#FFCC80"
+                android:pathData="M31.5,27.5h13a3.5,3.5 0 0,1 0,7h-13a3.5,3.5 0 0,1 0,-7z" />
+            <path android:fillColor="#FFE0B2" android:pathData="M34.5,27.5h7v7h-7z" />
+        </group>
+        <!-- Uhr -->
+        <path android:fillColor="#FFFFFF" android:strokeColor="#FFB300" android:strokeWidth="2.5"
+            android:pathData="M66,31a9,9 0 1,0 18,0a9,9 0 1,0 -18,0" />
+        <path android:strokeColor="#3A1014" android:strokeWidth="2" android:strokeLineCap="round"
+            android:pathData="M75,31V25.5M75,31L79,33.5" />
+    </group>
+</vector>
