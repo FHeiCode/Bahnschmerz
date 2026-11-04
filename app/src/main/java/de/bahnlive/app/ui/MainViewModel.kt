@@ -73,6 +73,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { store.remove(route) }
     }
 
+    fun reorder(routes: List<SavedRoute>) {
+        viewModelScope.launch { store.reorder(routes) }
+    }
+
     fun refreshNow() {
         val route = _board.value?.route ?: return
         viewModelScope.launch { load(route) }

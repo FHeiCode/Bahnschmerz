@@ -17,6 +17,15 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material.icons.filled.DragHandle
+import androidx.compose.material3.CardDefaults
+import androidx.compose.runtime.remember
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import sh.calvin.reorderable.ReorderableItem
+import sh.calvin.reorderable.rememberReorderableLazyListState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardActions
@@ -56,7 +65,22 @@ fun RouteSelectScreen(
     savedRoutes: List<SavedRoute>,
     onOpen: (SavedRoute) -> Unit,
     onDelete: (SavedRoute) -> Unit,
+    onReorder: (List<SavedRoute>) -> Unit,
 ) {
+    // Lokale Kopie, damit sich die Liste beim Ziehen sofort bewegt; gespeichert wird beim Loslassen.
+    var routes by remember(savedRoutes) { mutableStateOf(savedRoutes) }
+    val listState = rememberLazyListState()
+    val haptics = LocalHapticFeedback.current
+    val reorderState = rememberReorderableLazyListState(listState) { from, to ->
+        val fromIndex = routes.indexOfFirst { it.id == from.key }
+        val toIndex = routes.indexOfFirst { it.id == to.key }
+        // Nur zwischen Strecken verschieben – nicht über Eingabekarte oder Überschrift.
+        if (fromIndex >= 0 && toIndex >= 0) {
+            routes = routes.toMutableList().apply { add(toIndex, removeAt(fromIndex)) }
+            haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+        }
+    }
+
     var from by rememberSaveable { mutableStateOf("") }
     var to by rememberSaveable { mutableStateOf("") }
     var via by rememberSaveable { mutableStateOf("") }
@@ -83,6 +107,7 @@ fun RouteSelectScreen(
         },
     ) { padding ->
         LazyColumn(
+            state = listState,
             modifier = Modifier.fillMaxSize().padding(padding),
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -129,14 +154,29 @@ fun RouteSelectScreen(
                         modifier = Modifier.padding(top = 8.dp),
                     )
                 }
-                items(savedRoutes, key = { it.id }) { route ->
+                items(routes, key = { it.id }) { route ->
+                  ReorderableItem(reorderState, key = route.id) { isDragging ->
+                    val elevation by animateDpAsState(if (isDragging) 8.dp else 0.dp, label = "Ziehen")
                     Card(
                         Modifier.fillMaxWidth().clickable { onOpen(route) },
+                        elevation = CardDefaults.cardElevation(defaultElevation = elevation),
                     ) {
                         Row(
-                            Modifier.padding(start = 16.dp, top = 8.dp, bottom = 8.dp, end = 4.dp),
+                            Modifier.padding(start = 4.dp, top = 8.dp, bottom = 8.dp, end = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
+                            // Griff zum Ziehen
+                            IconButton(
+                                onClick = {},
+                                modifier = Modifier.draggableHandle(
+                                    onDragStarted = {
+                                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    },
+                                    onDragStopped = { onReorder(routes) },
+                                ),
+                            ) {
+                                Icon(Icons.Default.DragHandle, contentDescription = "Strecke verschieben")
+                            }
                             Icon(Icons.Default.Train, null, tint = MaterialTheme.colorScheme.primary)
                             Spacer(Modifier.width(12.dp))
                             Column(Modifier.weight(1f)) {
@@ -161,6 +201,7 @@ fun RouteSelectScreen(
                             }
                         }
                     }
+                  }
                 }
             }
 
