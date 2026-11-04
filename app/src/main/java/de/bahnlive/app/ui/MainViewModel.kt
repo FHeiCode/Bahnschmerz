@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import de.bahnlive.app.data.BoardResult
 import de.bahnlive.app.data.Connection
 import de.bahnlive.app.data.LatLon
+import de.bahnlive.app.data.MovingTrain
 import de.bahnlive.app.data.StationLocator
 import de.bahnlive.app.data.RouteRepository
 import de.bahnlive.app.data.RouteStore
@@ -26,8 +27,10 @@ data class BoardState(
     val route: SavedRoute,
     val loading: Boolean = true,
     val connections: List<Connection> = emptyList(),
-    /** Gerade zwischen A und B fahrende Züge, beide Richtungen. */
-    val moving: List<Connection> = emptyList(),
+    /** Züge, die gerade zwischen A und B unterwegs sind, beide Richtungen. */
+    val moving: List<MovingTrain> = emptyList(),
+    /** Bahnhöfe der Strecke in Reihenfolge (erster = Start, letzter = Ziel). */
+    val corridor: List<String> = emptyList(),
     /** Bekannte Bahnhofskoordinaten, Schlüssel = Bahnhofsname wie in den Daten. */
     val coordinates: Map<String, LatLon> = emptyMap(),
     val error: String? = null,
@@ -102,6 +105,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     loading = false,
                     connections = result.connections,
                     moving = result.moving,
+                    corridor = result.corridor,
                     error = null,
                     fetchedAt = result.fetchedAt,
                 )
@@ -117,11 +121,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun resolveCoordinates() {
         val state = _board.value ?: return
-        val names = buildList {
-            add(state.route.from)
-            add(state.route.to)
-            (state.moving + state.connections).forEach { c -> c.stopsBetween.forEach { add(it.name) } }
-        }.distinct().filterNot { it in state.coordinates }
+        // Bahnhöfe der Strecke in Reihenfolge – die Karte füllt fehlende Punkte vorläufig auf.
+        val names = (listOf(state.route.from, state.route.to) + state.corridor)
+            .distinct()
+            .filterNot { it in state.coordinates }
 
         val immediate = names.mapNotNull { n -> locator.cached(n)?.let { n to it } }.toMap()
         if (immediate.isNotEmpty()) {

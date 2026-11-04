@@ -77,9 +77,45 @@ sealed interface BoardResult {
         /** Kommende Abfahrten A → B (für die Liste). */
         val connections: List<Connection>,
         /** Züge, die gerade zwischen A und B unterwegs sind – beide Richtungen (für die Karte). */
-        val moving: List<Connection>,
+        val moving: List<MovingTrain>,
+        /** Bahnhöfe der Strecke in Reihenfolge, erster = Start, letzter = Ziel. */
+        val corridor: List<String>,
         val fetchedAt: LocalDateTime,
     ) : BoardResult
 
     data class Error(val message: String) : BoardResult
 }
+
+/** Erwartete Zeit (inkl. Verspätung), zu der ein Zug an einem Bahnhof der Strecke ist. */
+data class TimePoint(
+    /** Position in [BoardResult.Success.corridor]. */
+    val index: Int,
+    val time: LocalDateTime,
+    val delay: Int?,
+)
+
+/**
+ * Ein Zug, der gerade auf der Strecke unterwegs ist – unabhängig davon, wann er am
+ * Start abgefahren ist. Zusammengesetzt aus den Tafeln mehrerer Bahnhöfe der Strecke.
+ */
+data class MovingTrain(
+    val key: String,
+    val train: String,
+    val trainNumber: String?,
+    val destination: String,
+    /** +1 = Richtung Ziel, -1 = Richtung Start. */
+    val direction: Int,
+    /** Bahnhof (Korridor-Index), an dem der Zug in die Strecke einfährt bzw. sie verlässt. */
+    val entryIndex: Int,
+    val exitIndex: Int,
+    /** Beobachtete Zeitpunkte, nach Zeit sortiert. */
+    val points: List<TimePoint>,
+    /**
+     * Wurde die Tafel des Ein-/Ausfahrtsbahnhofs abgefragt? Fehlt der Zug dort, liegt seine
+     * Zeit außerhalb des Tafelfensters (letzte Stunde bis nächste drei Stunden).
+     */
+    val entryBoardFetched: Boolean,
+    val exitBoardFetched: Boolean,
+    val hasRealtime: Boolean,
+    val messages: List<String>,
+)

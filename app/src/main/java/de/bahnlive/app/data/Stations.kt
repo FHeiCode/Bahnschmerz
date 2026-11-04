@@ -6,7 +6,7 @@ data class LatLon(val lat: Double, val lon: Double)
 /**
  * Große Bahnhöfe mit ungefähren Koordinaten. Sie dienen als Eingabevorschläge und als
  * sofort verfügbare Kartenpunkte. Alle anderen Bahnhöfe sucht [StationLocator] bei Bedarf.
- * Eingegeben werden kann jeder Bahnhofsname, jede EVA-Nummer (8000105) oder DS100-Kürzel (FF).
+ * Eingegeben werden kann jeder Bahnhofsname, möglichst in der Schreibweise der DB.
  */
 object Stations {
     val known: Map<String, LatLon> = linkedMapOf(

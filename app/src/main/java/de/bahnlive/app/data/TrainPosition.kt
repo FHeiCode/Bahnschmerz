@@ -2,73 +2,176 @@ package de.bahnlive.app.data
 
 import java.time.Duration
 import java.time.LocalDateTime
+import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
+import kotlin.math.roundToLong
 import kotlin.math.sin
 import kotlin.math.sqrt
 
-/** Geschätzte Position eines Zuges auf der Karte. */
-data class TrainPosition(
-    val connection: Connection,
-    val position: LatLon,
-    /** Anteil der zurückgelegten Strecke zwischen Start und Ziel (0..1). */
-    val progress: Double,
+/** Aktueller Zustand eines Zuges auf der Strecke. */
+data class TrainStatus(
+    val train: MovingTrain,
+    /** Geschätzte Position; null, solange Bahnhofskoordinaten fehlen. */
+    val position: LatLon?,
+    /** Zurückgelegter Anteil seines Weges auf dieser Strecke (0..1), falls berechenbar. */
+    val progress: Double?,
+    /** Aktuellste Verspätung (Prognose für den nächsten Halt). */
+    val delay: Int?,
+    /** Nächster Bahnhof, für den eine Zeit bekannt ist. */
+    val next: TimePoint?,
 )
 
 /**
- * Schätzt, wo ein Zug gerade ist: Aus Ist-Abfahrt in A und prognostizierter Ankunft in B
- * wird der zeitliche Fortschritt berechnet und auf den Laufweg (A, Zwischenhalte, B)
- * übertragen. Echte GPS-Positionen liefert die DB-Schnittstelle nicht.
+ * Geometrie der Strecke: Koordinaten der Bahnhöfe in Reihenfolge. Fehlende Koordinaten
+ * werden zwischen den Nachbarn aufgefüllt, damit jeder Bahnhof eine Kilometerposition hat.
+ */
+class CorridorGeometry private constructor(
+    val points: List<LatLon>,
+    private val cumulative: List<Double>,
+) {
+    /** Kilometer ab Start für Bahnhof [index]. */
+    fun km(index: Int): Double = cumulative[index.coerceIn(0, cumulative.lastIndex)]
+
+    fun pointAt(km: Double): LatLon {
+        val d = km.coerceIn(0.0, cumulative.last())
+        for (i in 0 until points.lastIndex) {
+            val a = cumulative[i]
+            val b = cumulative[i + 1]
+            if (d <= b || i == points.lastIndex - 1) {
+                val t = if (b > a) ((d - a) / (b - a)).coerceIn(0.0, 1.0) else 0.0
+                val p = points[i]
+                val q = points[i + 1]
+                return LatLon(p.lat + (q.lat - p.lat) * t, p.lon + (q.lon - p.lon) * t)
+            }
+        }
+        return points.last()
+    }
+
+    companion object {
+        fun build(corridor: List<String>, coords: (String) -> LatLon?): CorridorGeometry? {
+            if (corridor.size < 2) return null
+            val raw = corridor.map(coords)
+            val known = raw.indices.filter { raw[it] != null }
+            // Start und Ziel braucht es mindestens, sonst ist die Lage unklar.
+            if (raw.first() == null || raw.last() == null) return null
+            val filled = raw.indices.map { i ->
+                raw[i] ?: run {
+                    val prev = known.last { it < i }
+                    val next = known.first { it > i }
+                    val t = (i - prev).toDouble() / (next - prev)
+                    val p = raw[prev]!!
+                    val q = raw[next]!!
+                    LatLon(p.lat + (q.lat - p.lat) * t, p.lon + (q.lon - p.lon) * t)
+                }
+            }
+            val cumulative = ArrayList<Double>(filled.size)
+            cumulative.add(0.0)
+            for (i in 1 until filled.size) cumulative.add(cumulative[i - 1] + distanceKm(filled[i - 1], filled[i]))
+            return CorridorGeometry(filled, cumulative)
+        }
+
+        fun distanceKm(a: LatLon, b: LatLon): Double {
+            val r = 6371.0
+            val dLat = Math.toRadians(b.lat - a.lat)
+            val dLon = Math.toRadians(b.lon - a.lon)
+            val h = sin(dLat / 2) * sin(dLat / 2) +
+                cos(Math.toRadians(a.lat)) * cos(Math.toRadians(b.lat)) * sin(dLon / 2) * sin(dLon / 2)
+            return 2 * r * atan2(sqrt(h), sqrt(1 - h))
+        }
+    }
+}
+
+/**
+ * Schätzt, wo ein Zug gerade ist. Die DB-Daten enthalten keine GPS-Positionen, nur Zeiten an
+ * Bahnhöfen. Zwischen zwei bekannten Zeitpunkten wird gleichmäßig interpoliert. Fehlt ein
+ * Zeitpunkt (Zug liegt außerhalb des Tafelfensters oder hält nicht an einem abgefragten
+ * Bahnhof), wird mit der Geschwindigkeit des Zuges hochgerechnet.
  */
 object PositionEstimator {
+    /** Zeitfenster der DBF-Tafeln (mit etwas Sicherheitsabstand). */
+    private const val WINDOW_PAST_MIN = 55L
+    private const val WINDOW_FUTURE_MIN = 175L
 
-    fun estimate(
-        c: Connection,
-        now: LocalDateTime,
-        coordinates: (String) -> LatLon?,
-    ): TrainPosition? {
-        val dep = c.departureExpected
-        val arr = c.arrivalExpected ?: return null
-        val total = Duration.between(dep, arr).seconds
-        if (total <= 0) return null
-        val progress = (Duration.between(dep, now).seconds.toDouble() / total).coerceIn(0.0, 1.0)
+    fun status(t: MovingTrain, geo: CorridorGeometry?, now: LocalDateTime): TrainStatus? {
+        val next = t.points.firstOrNull { it.time.isAfter(now) }
+        val delay = next?.delay ?: t.points.lastOrNull { !it.time.isAfter(now) }?.delay
+        if (!roughlyMoving(t, now)) return null
+        if (geo == null) return TrainStatus(t, null, null, delay, next)
 
-        val start = coordinates(c.from) ?: return null
-        val end = coordinates(c.to) ?: return null
-        val path = buildList {
-            add(start)
-            c.stopsBetween.mapNotNullTo(this) { coordinates(it.name) }
-            add(end)
-        }
-        return TrainPosition(c, pointAlong(path, progress), progress)
+        val timeline = timeline(t, geo, now)
+        val k = timeline.indexOfLast { !it.time.isAfter(now) }
+        if (k < 0 || k == timeline.lastIndex) return null
+        val a = timeline[k]
+        val b = timeline[k + 1]
+        val span = Duration.between(a.time, b.time).seconds
+        val f = if (span > 0) (Duration.between(a.time, now).seconds.toDouble() / span).coerceIn(0.0, 1.0) else 0.0
+        val km = geo.km(a.index) + (geo.km(b.index) - geo.km(a.index)) * f
+
+        val kmEntry = geo.km(t.entryIndex)
+        val kmExit = geo.km(t.exitIndex)
+        val progress = if (kmExit != kmEntry) ((km - kmEntry) / (kmExit - kmEntry)).coerceIn(0.0, 1.0) else null
+        return TrainStatus(t, geo.pointAt(km), progress, delay, next)
     }
 
-    /** Punkt bei [fraction] der Gesamtlänge eines Linienzugs. */
-    fun pointAlong(path: List<LatLon>, fraction: Double): LatLon {
-        if (path.size < 2) return path.first()
-        val lengths = path.zipWithNext { a, b -> distanceKm(a, b) }
-        val total = lengths.sum()
-        if (total <= 0.0) return path.first()
-        var remaining = fraction * total
-        lengths.forEachIndexed { i, len ->
-            if (remaining <= len || i == lengths.lastIndex) {
-                val t = if (len > 0) (remaining / len).coerceIn(0.0, 1.0) else 0.0
-                val a = path[i]
-                val b = path[i + 1]
-                return LatLon(a.lat + (b.lat - a.lat) * t, a.lon + (b.lon - a.lon) * t)
-            }
-            remaining -= len
+    /** Reine Zeitprüfung ohne Koordinaten: Ist der Zug zwischen Ein- und Ausfahrt? */
+    private fun roughlyMoving(t: MovingTrain, now: LocalDateTime): Boolean {
+        val anyPast = t.points.any { !it.time.isAfter(now) }
+        val anyFuture = t.points.any { it.time.isAfter(now) }
+        return when {
+            anyPast && anyFuture -> true
+            // Nur künftige Zeiten: unterwegs, wenn er die Einfahrt schon vor dem Tafelfenster passiert hat.
+            anyFuture -> t.entryBoardFetched || t.points.first().index != t.entryIndex
+            // Nur vergangene Zeiten: unterwegs, wenn die Ausfahrt erst nach dem Tafelfenster kommt.
+            else -> t.exitBoardFetched || t.points.last().index != t.exitIndex
         }
-        return path.last()
     }
 
-    fun distanceKm(a: LatLon, b: LatLon): Double {
-        val r = 6371.0
-        val dLat = Math.toRadians(b.lat - a.lat)
-        val dLon = Math.toRadians(b.lon - a.lon)
-        val h = sin(dLat / 2) * sin(dLat / 2) +
-            cos(Math.toRadians(a.lat)) * cos(Math.toRadians(b.lat)) * sin(dLon / 2) * sin(dLon / 2)
-        return 2 * r * atan2(sqrt(h), sqrt(1 - h))
+    /** Beobachtete Zeitpunkte, ergänzt um hochgerechnete Ein- und Ausfahrt. */
+    private fun timeline(t: MovingTrain, geo: CorridorGeometry, now: LocalDateTime): List<TimePoint> {
+        val pts = t.points.toMutableList()
+        val speed = speedKmh(t, geo)
+
+        val first = pts.first()
+        if (first.index != t.entryIndex) {
+            var time = first.time.minusSeconds(seconds(abs(geo.km(first.index) - geo.km(t.entryIndex)), speed))
+            // Stand der Zug nicht auf der Tafel des Einfahrtsbahnhofs, war er vor dem Tafelfenster dort.
+            if (t.entryBoardFetched) time = minOf(time, now.minusMinutes(WINDOW_PAST_MIN))
+            pts.add(0, TimePoint(t.entryIndex, time, null))
+        }
+        val last = pts.last()
+        if (last.index != t.exitIndex) {
+            var time = last.time.plusSeconds(seconds(abs(geo.km(t.exitIndex) - geo.km(last.index)), speed))
+            if (t.exitBoardFetched) time = maxOf(time, now.plusMinutes(WINDOW_FUTURE_MIN))
+            pts.add(TimePoint(t.exitIndex, time, null))
+        }
+        return pts
+    }
+
+    private fun seconds(km: Double, kmh: Double): Long = (km / kmh * 3600).roundToLong()
+
+    /** Geschwindigkeit aus zwei beobachteten Bahnhöfen, sonst typischer Wert der Zuggattung. */
+    private fun speedKmh(t: MovingTrain, geo: CorridorGeometry): Double {
+        val first = t.points.first()
+        val last = t.points.lastOrNull { it.index != first.index }
+        if (last != null) {
+            val km = abs(geo.km(last.index) - geo.km(first.index))
+            val hours = Duration.between(first.time, last.time).seconds / 3600.0
+            if (km > 1.0 && hours > 0.0) return (km / hours).coerceIn(30.0, 250.0)
+        }
+        return defaultSpeed(t.train)
+    }
+
+    /** Luftlinien-Geschwindigkeit (Strecke zwischen Bahnhöfen als Gerade, inkl. Halte). */
+    fun defaultSpeed(train: String): Double {
+        val type = train.trim().takeWhile { it.isLetter() }.uppercase()
+        return when (type) {
+            "ICE", "ECE" -> 140.0
+            "IC", "EC", "RJ", "RJX", "NJ", "EN", "FLX", "TGV", "ES", "D", "WB" -> 105.0
+            "RE", "IRE", "MEX", "FEX", "RE+" -> 70.0
+            "S" -> 40.0
+            else -> 50.0
+        }
     }
 }
 

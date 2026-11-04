@@ -102,7 +102,7 @@ fun RouteSelectScreen(
                         }
                         Spacer(Modifier.height(8.dp))
                         Text(
-                            "Bahnhofsname, EVA-Nummer (z. B. 8000105) oder DS100-Kürzel (z. B. FF).",
+                            "Bahnhofsname wie bei der DB, z. B. „Köln Hbf“ oder „Frankfurt(Main)Hbf“.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

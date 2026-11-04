@@ -12,8 +12,9 @@ Sie zeigt alle direkten Züge, die in A abfahren und B anfahren – mit Live-Dat
 - Zwischenhalte (Antippen einer Karte klappt Details auf)
 - Gespeicherte Lieblingsstrecken, Gegenrichtung per Knopfdruck
 - Automatische Aktualisierung jede Minute, solange die App sichtbar ist; Pull-to-Refresh
-- **Karte** (Reiter „Karte“): alle Züge, die gerade zwischen A und B unterwegs sind
-  (beide Richtungen), farbig nach Verspätung:
+- **Gerade unterwegs**: alle Züge, die sich jetzt zwischen A und B befinden – in beiden
+  Richtungen und unabhängig davon, wann sie am Start abgefahren sind. Als Liste oben im
+  Reiter „Abfahrten“ und auf der **Karte** (Reiter „Karte“), farbig nach Verspätung:
 
   | Farbe | Verspätung |
   |---|---|
@@ -24,16 +25,26 @@ Sie zeigt alle direkten Züge, die in A abfahren und B anfahren – mit Live-Dat
   | Rot | über 60 Min. |
   | Grau | keine Echtzeitdaten |
 
-  Zug antippen zeigt Richtung, Verspätung und Ankunftszeit.
+  Zug antippen zeigt Richtung, Verspätung und den nächsten Bahnhof mit Zeit.
+
+## Wie die unterwegs befindlichen Züge gefunden werden
+
+Jede Abfahrtstafel reicht nur von etwa einer Stunde zurück bis drei Stunden voraus. Ein Zug,
+der vor vier Stunden in A losgefahren ist, steht also nicht mehr auf der Tafel von A. Deshalb
+fragt die App die Tafeln von **A, B und bis zu vier Zwischenbahnhöfen** ab (gleichmäßig
+verteilt, jeweils der Bahnhof mit den meisten Halten). Einträge desselben Zuges (gleiche
+Zugnummer) werden zusammengeführt. Aus dem Laufweg ergibt sich die Fahrtrichtung, aus den
+Zeiten an den Bahnhöfen, wo er gerade ist.
 
 ## Wie die Zugpositionen entstehen
 
 Die DB-Echtzeitdaten enthalten **keine GPS-Positionen**. Die App schätzt die Position:
-Aus der Ist-Abfahrt in A und der prognostizierten Ankunft in B ergibt sich der zeitliche
-Fortschritt, der auf den Laufweg (A → Zwischenhalte → B) übertragen wird. Die Züge
-bewegen sich alle 10 Sekunden weiter; die Daten werden jede Minute neu geladen.
-Haltezeiten an Zwischenbahnhöfen sind dabei nicht berücksichtigt – die Position kann
-deshalb einige Kilometer abweichen.
+Zwischen zwei Bahnhöfen, für die Echtzeit-Zeiten bekannt sind, wird gleichmäßig
+interpoliert (Haltezeiten an diesen Bahnhöfen werden berücksichtigt). Fehlt eine Zeit – etwa
+weil ein Fernzug an keinem abgefragten Zwischenbahnhof hält –, rechnet die App mit der
+Geschwindigkeit des Zuges hoch (aus seinen bekannten Zeiten, sonst ein typischer Wert der
+Zuggattung). Die Züge bewegen sich alle 10 Sekunden weiter; die Daten werden jede Minute
+neu geladen. Die Position kann einige Kilometer abweichen.
 
 Bahnhofskoordinaten: Für ~70 große Bahnhöfe sind sie in der App enthalten. Alle anderen
 werden einmalig bei OpenStreetMap (Nominatim, max. 1 Anfrage/Sekunde) gesucht und
@@ -49,7 +60,8 @@ die die IRIS-Echtzeitdaten der Deutschen Bahn bereitstellt – ohne Registrierun
 Die frühere Schnittstelle `v6.db.transport.rest` ist abgeschaltet.
 
 Nutzungsregeln von DBF: höchstens 30 Anfragen/Minute und eine Anfrage pro Bahnhof und Minute.
-Die App hält das ein (60-Sekunden-Cache je Bahnhof, pro Aktualisierung 2 Anfragen).
+Die App hält das ein: 60-Sekunden-Cache je Bahnhof, pro Aktualisierung höchstens 6 Anfragen
+(A, B, 4 Zwischenbahnhöfe) und ein eingebautes Limit von 26 Anfragen pro Minute.
 Für intensive Nutzung kann DBF selbst gehostet werden (Open Source: github.com/derf/db-fakedisplay);
 dann nur die Basis-URL in `DbfApi.kt` ändern.
 
@@ -65,8 +77,10 @@ Voraussetzungen: JDK 17, Android SDK 35, minSdk 26 (Android 8.0).
 
 ## Eingabe der Bahnhöfe
 
-Bahnhofsname (z. B. `Köln Hbf`, `Frankfurt(Main)Hbf`), EVA-Nummer (`8000105`)
-oder DS100-Kürzel (`FF`). Bei mehrdeutigen Namen zeigt die App Vorschläge des Servers an.
+Bahnhofsname, möglichst so geschrieben wie bei der DB (z. B. `Köln Hbf`,
+`Frankfurt(Main)Hbf`). Die Vorschläge unter dem Eingabefeld helfen dabei. Bei mehrdeutigen
+Namen zeigt die App Vorschläge des Servers an. EVA-Nummern und DS100-Kürzel werden
+nicht unterstützt, weil die Strecke über die Bahnhofsnamen im Laufweg erkannt wird.
 
 ## Projektstruktur
 
@@ -75,7 +89,8 @@ app/src/main/java/de/bahnlive/app/
 ├── MainActivity.kt          Einstieg, Navigation zwischen den zwei Ansichten
 ├── data/
 │   ├── DbfApi.kt            HTTP-Zugriff + tolerantes JSON-Parsen + Cache
-│   ├── RouteRepository.kt   Filtert Züge A→B, verknüpft Ankunft in B
+│   ├── RouteRepository.kt   Filtert Züge A→B, Bahnhofsfolge, Zusatztafeln
+│   ├── MovingTrainFinder.kt Findet alle Züge, die gerade auf der Strecke sind
 │   ├── RouteStore.kt        Lieblingsstrecken (DataStore)
 │   ├── Stations.kt          Große Bahnhöfe mit Koordinaten
 │   ├── StationLocator.kt    Koordinatensuche (OSM Nominatim) + Cache
@@ -91,9 +106,11 @@ app/src/main/java/de/bahnlive/app/
 ## Grenzen
 
 - Nur direkte Verbindungen (keine Umstiege).
-- Karte: Züge, die A vor mehr als etwa einer Stunde verlassen haben, fehlen
-  (die Abfahrtstafel reicht nur eine Stunde zurück). Bei sehr langen Strecken
-  ist die Karte daher unvollständig.
+- „Gerade unterwegs“: Ein Zug, der auf einer sehr langen Strecke an keinem der sechs
+  abgefragten Bahnhöfe innerhalb ihres Zeitfensters auftaucht, fehlt. Bei Strecken mit
+  vielen Halten zwischen den Messpunkten ist die Position ungenauer.
+- Weichen Züge auf eine Parallelstrecke aus, zeichnet die Karte sie trotzdem auf der
+  Hauptlinie (der Bahnhofsfolge mit den meisten Halten).
 - Zeitfenster: etwa die nächsten 3 Stunden (Vorgabe von DBF).
 - Abdeckung wie DB IRIS: Fern- und Regionalverkehr, S-Bahn; keine Busse/Trams.
 
