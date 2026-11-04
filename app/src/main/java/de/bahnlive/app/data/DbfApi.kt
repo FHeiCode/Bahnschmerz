@@ -39,14 +39,29 @@ class DbfApi(
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
     private val cache = mutableMapOf<String, Pair<Long, List<BoardEntry>>>()
     private val mutex = Mutex()
+    private val requestTimes = ArrayDeque<Long>()
 
-    suspend fun board(station: String): List<BoardEntry> {
+    /**
+     * Abfahrtstafel eines Bahnhofs. [optional] = Zusatztafel (Zwischenbahnhof): Sie bekommt
+     * ein kleineres Kontingent, damit Start- und Zieltafel immer abgefragt werden können.
+     */
+    suspend fun board(station: String, optional: Boolean = false): List<BoardEntry> {
         val key = station.trim().lowercase()
-        mutex.withLock {
-            cache[key]?.let { (time, data) ->
-                if (System.currentTimeMillis() - time < CACHE_MILLIS) return data
-            }
+        val cached = mutex.withLock { cache[key] }
+        if (cached != null && System.currentTimeMillis() - cached.first < CACHE_MILLIS) return cached.second
+
+        val allowed = mutex.withLock {
+            val now = System.currentTimeMillis()
+            while (requestTimes.isNotEmpty() && now - requestTimes.first() > 60_000) requestTimes.removeFirst()
+            val limit = if (optional) OPTIONAL_PER_MINUTE else MAX_PER_MINUTE
+            if (requestTimes.size >= limit) false else { requestTimes.addLast(now); true }
         }
+        if (!allowed) {
+            // Lieber etwas ältere Daten zeigen als die Nutzungsregeln verletzen.
+            cached?.let { return it.second }
+            throw IOException("Anfragelimit erreicht – bitte eine Minute warten.")
+        }
+
         val data = fetch(station.trim())
         mutex.withLock { cache[key] = System.currentTimeMillis() to data }
         return data
@@ -129,6 +144,10 @@ class DbfApi(
 
     companion object {
         private const val CACHE_MILLIS = 60_000L
+
+        /** DBF erlaubt 30 Anfragen pro Minute – etwas Reserve bleibt. */
+        private const val MAX_PER_MINUTE = 26
+        private const val OPTIONAL_PER_MINUTE = 18
     }
 }
 

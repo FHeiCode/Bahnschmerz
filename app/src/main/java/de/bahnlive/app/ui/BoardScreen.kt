@@ -54,6 +54,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import de.bahnlive.app.data.Connection
+import de.bahnlive.app.data.DelayLevel
+import de.bahnlive.app.data.TrainStatus
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import java.time.Duration
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
@@ -108,12 +112,15 @@ fun BoardScreen(
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             var tab by rememberSaveable { mutableIntStateOf(0) }
+            var showUnderway by rememberSaveable { mutableStateOf(true) }
+            val mapData = rememberStationMapData(state)
+            val underway = mapData.statuses
             TabRow(selectedTabIndex = tab) {
                 Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Abfahrten") })
                 Tab(
                     selected = tab == 1,
                     onClick = { tab = 1 },
-                    text = { Text(if (state.moving.isEmpty()) "Karte" else "Karte (${state.moving.size})") },
+                    text = { Text(if (underway.isEmpty()) "Karte" else "Karte (${underway.size})") },
                 )
             }
             if (state.loading) {
@@ -123,7 +130,7 @@ fun BoardScreen(
             }
             if (tab == 1) {
                 state.error?.let { Box(Modifier.padding(12.dp)) { ErrorCard(it) } }
-                RouteMap(state, Modifier.fillMaxSize())
+                RouteMap(state, mapData, Modifier.fillMaxSize())
                 return@Column
             }
             PullToRefreshBox(
@@ -138,6 +145,32 @@ fun BoardScreen(
                 ) {
                     item { StatusLine(state) }
                     state.error?.let { msg -> item { ErrorCard(msg) } }
+
+                    // Alle Züge, die gerade auf der Strecke sind – egal, wann sie abgefahren sind.
+                    if (underway.isNotEmpty()) {
+                        item(key = "underway-header") {
+                            SectionHeader(
+                                text = "Gerade unterwegs (${underway.size})",
+                                expanded = showUnderway,
+                                onToggle = { showUnderway = !showUnderway },
+                            )
+                        }
+                        if (showUnderway) {
+                            val sorted = underway.sortedWith(
+                                compareByDescending<TrainStatus> { it.train.direction }
+                                    .thenByDescending { it.progress ?: 0.0 },
+                            )
+                            items(sorted, key = { "m-${it.train.key}" }) { UnderwayRow(it, state) }
+                        }
+                        item(key = "departures-header") {
+                            Text(
+                                "Nächste Abfahrten ab ${state.route.from}",
+                                style = MaterialTheme.typography.titleSmall,
+                                modifier = Modifier.padding(top = 8.dp),
+                            )
+                        }
+                    }
+
                     if (!state.loading && state.error == null && state.connections.isEmpty()) {
                         item {
                             Text(
@@ -153,6 +186,81 @@ fun BoardScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun SectionHeader(text: String, expanded: Boolean, onToggle: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onToggle).padding(top = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(text, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+        Icon(
+            if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+            contentDescription = if (expanded) "Einklappen" else "Ausklappen",
+        )
+    }
+}
+
+/** Kompakte Zeile für einen Zug, der gerade auf der Strecke fährt. */
+@Composable
+private fun UnderwayRow(s: TrainStatus, state: BoardState) {
+    val t = s.train
+    val lvl = s.level()
+    val towards = if (t.direction > 0) state.route.to else state.route.from
+    Card(Modifier.fillMaxWidth()) {
+        Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .background(Color(lvl.argb), RoundedCornerShape(6.dp))
+                    .padding(horizontal = 8.dp, vertical = 3.dp)
+                    .widthIn(min = 40.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    t.train,
+                    color = if (lvl.darkText) Color.Black else Color.White,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Richtung $towards",
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                val nextText = s.next?.let { n ->
+                    state.corridor.getOrNull(n.index)?.let { "$it ${n.time.format(TIME)}" }
+                }
+                Text(
+                    nextText?.let { "als Nächstes: $it" } ?: "Position geschätzt",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Text(
+                when {
+                    s.delay == null && !t.hasRealtime -> "–"
+                    (s.delay ?: 0) > 0 -> "+${s.delay}"
+                    else -> "pünktl."
+                },
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+                color = when (lvl) {
+                    // Hellgrün und Gelb sind als Schrift schlecht lesbar – dafür dunklere Töne derselben Farbe.
+                    DelayLevel.LIGHT -> Color(0xFF558B2F)
+                    DelayLevel.MEDIUM -> Color(0xFFB28704)
+                    else -> Color(lvl.argb)
+                },
+            )
         }
     }
 }

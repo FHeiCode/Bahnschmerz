@@ -9,29 +9,45 @@ import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 
 /**
- * Ermittelt für eine Strecke A → B alle Züge, die in A abfahren und B
- * später auf ihrem Laufweg haben, und ergänzt die Echtzeit-Ankunft in B.
+ * Ermittelt für eine Strecke A → B
+ * - alle kommenden Züge, die in A abfahren und B anfahren (mit Echtzeit-Ankunft in B), und
+ * - alle Züge, die gerade irgendwo zwischen A und B unterwegs sind, in beiden Richtungen.
  */
 class RouteRepository(private val api: DbfApi = DbfApi()) {
+
+    /** Zuletzt bestimmte Bahnhofsfolge je Strecke – bleibt stabil, damit dieselben Tafeln abgefragt werden. */
+    private val corridors = mutableMapOf<String, List<String>>()
 
     suspend fun connections(route: SavedRoute, now: LocalDateTime = LocalDateTime.now()): BoardResult =
         try {
             coroutineScope {
                 val originBoard = async { api.board(route.from) }
-                // Die Zieltafel ist optional – sie liefert nur Ankunftszeit und -gleis.
-                val destBoard = async { runCatching { api.board(route.to) }.getOrNull() }
+                // Die Zieltafel ist optional – sie liefert Ankunftszeit und -gleis.
+                val destBoard = async { optional { api.board(route.to) } }
                 val a = originBoard.await()
-                val b = destBoard.await().orEmpty()
+                val b = destBoard.await()
 
-                val forward = build(route, a, b, now)
+                val forward = build(route, a, b.orEmpty(), now)
                 // Gegenrichtung aus denselben zwei Tafeln – keine zusätzlichen Anfragen.
-                val backward = build(route.reversed(), b, a, now)
+                val backward = build(route.reversed(), b.orEmpty(), a, now)
+
+                // Bahnhofsfolge der Strecke und einige Zwischenbahnhöfe als zusätzliche Messpunkte.
+                val corridor = corridorFor(route, forward, backward)
+                val extra = sampleIndices(corridor, forward + backward).map { i ->
+                    async { optional { api.board(corridor[i], optional = true) }?.let { MovingTrainFinder.StationBoard(i, it) } }
+                }
+                val boards = buildList {
+                    add(MovingTrainFinder.StationBoard(0, a))
+                    b?.let { add(MovingTrainFinder.StationBoard(corridor.lastIndex, it)) }
+                    extra.forEach { job -> job.await()?.let { add(it) } }
+                }
 
                 BoardResult.Success(
                     connections = forward
                         .filter { !it.departureExpected.isBefore(now.minusMinutes(1)) }
                         .sortedBy { it.departureExpected },
-                    moving = (forward + backward).filter { it.isMovingAt(now) },
+                    moving = MovingTrainFinder.find(corridor, boards, now),
+                    corridor = corridor,
                     fetchedAt = now,
                 )
             }
@@ -102,11 +118,48 @@ class RouteRepository(private val api: DbfApi = DbfApi()) {
         )
     }
 
-    /** Zug hat A verlassen, B aber noch nicht erreicht (nach Echtzeit). */
-    private fun Connection.isMovingAt(now: LocalDateTime): Boolean {
-        if (isCancelled) return false
-        val arr = arrivalExpected ?: return false
-        return !departureExpected.isAfter(now) && arr.isAfter(now)
+    /** Fehler einer Zusatztafel brechen nicht alles ab – die Tafel fehlt dann einfach. */
+    private suspend fun <T> optional(block: suspend () -> T): T? =
+        try {
+            block()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
+        }
+
+    /**
+     * Bahnhofsfolge A → B: der Laufweg des Zuges mit den meisten Zwischenhalten
+     * (meist ein Regionalzug, der überall hält).
+     */
+    private fun corridorFor(route: SavedRoute, forward: List<Connection>, backward: List<Connection>): List<String> {
+        val candidates =
+            forward.map { c -> listOf(route.from) + c.stopsBetween.map { it.name } + route.to } +
+                backward.map { c -> (listOf(route.to) + c.stopsBetween.map { it.name } + route.from).reversed() }
+        val best = candidates.maxByOrNull { it.size } ?: listOf(route.from, route.to)
+        synchronized(corridors) {
+            val previous = corridors[route.id]
+            val chosen = if (previous != null && previous.size >= best.size) previous else best
+            corridors[route.id] = chosen
+            return chosen
+        }
+    }
+
+    /**
+     * Wählt bis zu [MAX_EXTRA_BOARDS] Zwischenbahnhöfe, gleichmäßig über die Strecke verteilt.
+     * Pro Abschnitt der Bahnhof, an dem die meisten Züge halten (dort halten auch Fernzüge).
+     */
+    private fun sampleIndices(corridor: List<String>, connections: List<Connection>): List<Int> {
+        val interior = (1 until corridor.lastIndex).toList()
+        if (interior.isEmpty()) return emptyList()
+        val bins = minOf(MAX_EXTRA_BOARDS, interior.size)
+        val score = interior.associateWith { i ->
+            connections.count { c -> c.stopsBetween.any { sameStation(it.name, corridor[i]) } }
+        }
+        return (0 until bins).mapNotNull { bin ->
+            interior.subList(bin * interior.size / bins, (bin + 1) * interior.size / bins)
+                .maxByOrNull { score[it] ?: 0 }
+        }.distinct()
     }
 
     private fun sameTrain(a: BoardEntry, b: BoardEntry): Boolean =
@@ -114,6 +167,9 @@ class RouteRepository(private val api: DbfApi = DbfApi()) {
         else normalize(a.train) == normalize(b.train)
 
     companion object {
+        /** Start + Ziel + 4 Zwischenbahnhöfe = 6 Anfragen pro Minute (DBF erlaubt 30). */
+        private const val MAX_EXTRA_BOARDS = 4
+
         private val HHMM = DateTimeFormatter.ofPattern("H:mm")
 
         private fun parse(hhmm: String): LocalTime? =

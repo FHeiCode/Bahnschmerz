@@ -37,11 +37,10 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import de.bahnlive.app.data.Connection
+import de.bahnlive.app.data.CorridorGeometry
 import de.bahnlive.app.data.DelayLevel
-import de.bahnlive.app.data.LatLon
 import de.bahnlive.app.data.PositionEstimator
-import de.bahnlive.app.data.TrainPosition
+import de.bahnlive.app.data.TrainStatus
 import kotlinx.coroutines.delay
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.BoundingBox
@@ -56,15 +55,14 @@ import java.time.format.DateTimeFormatter
 
 private val HM = DateTimeFormatter.ofPattern("HH:mm")
 
-/**
- * Karte der Strecke mit allen Zügen, die gerade zwischen Start und Ziel unterwegs sind.
- * Die Züge werden nach Verspätung eingefärbt; ihre Position ist aus den Fahrzeiten geschätzt.
- */
-@Composable
-fun RouteMap(state: BoardState, modifier: Modifier = Modifier) {
-    val context = LocalContext.current
+/** Ergebnis der Positionsschätzung für Karte und Liste, alle 10 Sekunden neu berechnet. */
+class StationMapData(
+    val geometry: CorridorGeometry?,
+    val statuses: List<TrainStatus>,
+)
 
-    // Positionen alle 10 Sekunden neu schätzen, damit sich die Züge bewegen.
+@Composable
+fun rememberStationMapData(state: BoardState): StationMapData {
     var now by remember { mutableStateOf(LocalDateTime.now()) }
     LaunchedEffect(Unit) {
         while (true) {
@@ -72,13 +70,25 @@ fun RouteMap(state: BoardState, modifier: Modifier = Modifier) {
             now = LocalDateTime.now()
         }
     }
+    val geometry = remember(state.corridor, state.coordinates) {
+        CorridorGeometry.build(state.corridor) { state.coordinates[it] }
+    }
+    val statuses = remember(state.moving, geometry, now) {
+        state.moving.mapNotNull { PositionEstimator.status(it, geometry, now) }
+    }
+    return StationMapData(geometry, statuses)
+}
 
-    val positions = remember(state.moving, state.coordinates, now) {
-        state.moving.mapNotNull { c -> PositionEstimator.estimate(c, now) { state.coordinates[it] } }
-    }
-    val path = remember(state.route, state.connections, state.moving, state.coordinates) {
-        routePath(state)
-    }
+fun TrainStatus.level(): DelayLevel = DelayLevel.of(delay, train.hasRealtime)
+
+/**
+ * Karte der Strecke mit allen Zügen, die gerade zwischen Start und Ziel unterwegs sind,
+ * eingefärbt nach Verspätung. Die Positionen sind aus den Fahrzeiten geschätzt.
+ */
+@Composable
+fun RouteMap(state: BoardState, data: StationMapData, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val positions = data.statuses.filter { it.position != null }
 
     val mapView = remember {
         MapView(context).apply {
@@ -109,16 +119,16 @@ fun RouteMap(state: BoardState, modifier: Modifier = Modifier) {
         }
     }
 
-    // Einmal pro Strecke auf Start und Ziel zoomen, sobald beide Koordinaten bekannt sind.
-    val ends = listOfNotNull(state.coordinates[state.route.from], state.coordinates[state.route.to])
-    LaunchedEffect(state.route, ends.size == 2) {
-        if (ends.size == 2) fitTo(mapView, path.ifEmpty { ends })
+    // Einmal pro Strecke auf die Strecke zoomen, sobald Start und Ziel bekannt sind.
+    val hasGeometry = data.geometry != null
+    LaunchedEffect(state.route, hasGeometry) {
+        data.geometry?.let { fitTo(mapView, it) }
     }
 
     Box(modifier) {
         AndroidView(
             factory = { mapView },
-            update = { map -> render(map, state, path, positions) },
+            update = { map -> render(map, state, data.geometry, positions) },
         )
 
         if (state.fetchedAt != null && positions.isEmpty()) {
@@ -130,7 +140,7 @@ fun RouteMap(state: BoardState, modifier: Modifier = Modifier) {
             ) {
                 Text(
                     when {
-                        ends.size < 2 -> "Suche Bahnhofskoordinaten …"
+                        data.geometry == null -> "Suche Bahnhofskoordinaten …"
                         state.moving.isEmpty() -> "Gerade ist kein Zug auf dieser Strecke unterwegs."
                         else -> "Positionen werden berechnet …"
                     },
@@ -145,8 +155,8 @@ fun RouteMap(state: BoardState, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun Legend(positions: List<TrainPosition>, modifier: Modifier) {
-    val counts = positions.groupingBy { level(it.connection) }.eachCount()
+private fun Legend(positions: List<TrainStatus>, modifier: Modifier) {
+    val counts = positions.groupingBy { it.level() }.eachCount()
     Surface(
         shape = RoundedCornerShape(8.dp),
         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
@@ -174,38 +184,21 @@ private fun Legend(positions: List<TrainPosition>, modifier: Modifier) {
     }
 }
 
-private fun level(c: Connection) = DelayLevel.of(c.currentDelay, c.hasRealtime)
-
-/** Linienzug der Strecke A → B über die Zwischenhalte des Zuges mit den meisten bekannten Halten. */
-private fun routePath(state: BoardState): List<LatLon> {
-    val coords = state.coordinates
-    val start = coords[state.route.from] ?: return emptyList()
-    val end = coords[state.route.to] ?: return emptyList()
-    val best = (state.connections + state.moving)
-        .map { c ->
-            val stops = c.stopsBetween.mapNotNull { coords[it.name] }
-            if (c.from == state.route.from) stops else stops.reversed()
-        }
-        .maxByOrNull { it.size }
-        .orEmpty()
-    return listOf(start) + best + listOf(end)
-}
-
-private fun fitTo(map: MapView, points: List<LatLon>) {
-    if (points.size < 2) return
-    val box = BoundingBox.fromGeoPointsSafe(points.map { GeoPoint(it.lat, it.lon) })
+private fun fitTo(map: MapView, geometry: CorridorGeometry) {
+    val box = BoundingBox.fromGeoPointsSafe(geometry.points.map { GeoPoint(it.lat, it.lon) })
         .increaseByScale(1.25f)
     val zoom = { map.zoomToBoundingBox(box, false, 48) }
     if (map.width > 0 && map.height > 0) zoom() else map.addOnFirstLayoutListener { _, _, _, _, _ -> zoom() }
 }
 
-private fun render(map: MapView, state: BoardState, path: List<LatLon>, positions: List<TrainPosition>) {
+private fun render(map: MapView, state: BoardState, geometry: CorridorGeometry?, positions: List<TrainStatus>) {
     val ctx = map.context
     map.overlays.clear()
 
-    if (path.size >= 2) {
+    // Strecke als Linie über alle Bahnhöfe (fehlende Koordinaten vorläufig aufgefüllt).
+    if (geometry != null) {
         map.overlays.add(Polyline(map).apply {
-            setPoints(path.map { GeoPoint(it.lat, it.lon) })
+            setPoints(geometry.points.map { GeoPoint(it.lat, it.lon) })
             outlinePaint.color = 0xCC1565C0.toInt()
             outlinePaint.strokeWidth = 6f * ctx.resources.displayMetrics.density
             outlinePaint.strokeCap = Paint.Cap.ROUND
@@ -213,15 +206,10 @@ private fun render(map: MapView, state: BoardState, path: List<LatLon>, position
         })
     }
 
-    // Bahnhöfe der Strecke
-    val stationNames = buildList {
-        add(state.route.from)
-        (state.connections + state.moving).forEach { c -> c.stopsBetween.forEach { add(it.name) } }
-        add(state.route.to)
-    }.distinct()
-    stationNames.forEach { name ->
-        val p = state.coordinates[name] ?: return@forEach
-        val isEnd = name == state.route.from || name == state.route.to
+    // Bahnhöfe mit bekannten Koordinaten
+    state.corridor.forEachIndexed { i, name ->
+        val p = state.coordinates[name] ?: return@forEachIndexed
+        val isEnd = i == 0 || i == state.corridor.lastIndex
         map.overlays.add(Marker(map).apply {
             position = GeoPoint(p.lat, p.lon)
             setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
@@ -231,31 +219,35 @@ private fun render(map: MapView, state: BoardState, path: List<LatLon>, position
     }
 
     // Züge – verspätete zuletzt zeichnen, damit sie oben liegen
-    positions.sortedBy { it.connection.currentDelay ?: 0 }.forEach { tp ->
-        val c = tp.connection
-        val lvl = level(c)
+    positions.sortedBy { it.delay ?: 0 }.forEach { s ->
+        val t = s.train
+        val pos = s.position ?: return@forEach
         map.overlays.add(Marker(map).apply {
-            position = GeoPoint(tp.position.lat, tp.position.lon)
+            position = GeoPoint(pos.lat, pos.lon)
             setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
-            icon = trainIcon(ctx, c.train, lvl)
-            title = "${c.train} → ${c.destination}"
+            icon = trainIcon(ctx, t.train, s.level())
+            title = if (t.destination.isNotBlank()) "${t.train} → ${t.destination}" else t.train
             snippet = buildString {
-                append("Richtung ${c.to}<br>")
-                append(
-                    when (val d = c.currentDelay) {
-                        null -> "Keine Echtzeitdaten"
-                        0 -> "Pünktlich"
-                        else -> if (d > 0) "+$d Min. Verspätung" else "${-d} Min. früher"
-                    }
-                )
-                c.arrivalExpected?.let { append("<br>Ankunft ${c.to}: ${it.format(HM)}") }
-                append("<br>${(tp.progress * 100).toInt()} % der Strecke · Position geschätzt")
+                append("Richtung ${if (t.direction > 0) state.route.to else state.route.from}<br>")
+                append(delayText(s.delay, t.hasRealtime))
+                s.next?.let { n ->
+                    state.corridor.getOrNull(n.index)?.let { append("<br>$it: ${n.time.format(HM)}") }
+                }
+                s.progress?.let { append("<br>${(it * 100).toInt()} % seines Weges auf dieser Strecke") }
+                append("<br>Position geschätzt")
             }
         })
     }
 
     map.overlays.add(CopyrightOverlay(ctx))
     map.invalidate()
+}
+
+fun delayText(delay: Int?, hasRealtime: Boolean): String = when {
+    delay == null && !hasRealtime -> "Keine Echtzeitdaten"
+    delay == null || delay == 0 -> "Pünktlich"
+    delay > 0 -> "+$delay Min. Verspätung"
+    else -> "${-delay} Min. früher"
 }
 
 private fun stationIcon(ctx: Context, isEnd: Boolean): BitmapDrawable {
