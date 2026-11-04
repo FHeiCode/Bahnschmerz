@@ -76,7 +76,7 @@ fun RouteSelectScreen(
                             modifier = Modifier.size(32.dp),
                         )
                         Spacer(Modifier.width(10.dp))
-                        Text("Bahnschmerz", fontWeight = FontWeight.Bold)
+                        BahnSchmerzWordmark()
                     }
                 },
             )

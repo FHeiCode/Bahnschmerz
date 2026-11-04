@@ -1,6 +1,8 @@
-# Bahnschmerz – Echtzeitdaten für deine Bahnstrecke
+# BahnSchmerz – Echtzeitdaten für deine Bahnstrecke
 
 ![Logo](store/icon_512.png)
+
+![Schriftzug](store/wordmark_light.png)
 
 Android-App (Kotlin, Jetpack Compose) für eine frei wählbare Strecke **A → B**.
 Sie zeigt alle direkten Züge, die in A abfahren und B anfahren – mit Live-Daten:
