@@ -87,7 +87,8 @@ fun BoardScreen(
                     Column {
                         Text(state.route.from, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(
-                            "→ ${state.route.to}",
+                            "→ ${state.route.to}" +
+                                (state.route.via?.takeIf { it.isNotBlank() }?.let { " · über $it" } ?: ""),
                             style = MaterialTheme.typography.bodyMedium,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,

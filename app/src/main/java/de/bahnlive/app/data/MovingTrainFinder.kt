@@ -17,7 +17,13 @@ object MovingTrainFinder {
 
     private class Obs(val index: Int, val entry: BoardEntry, val routeIndices: List<Int>)
 
-    fun find(corridor: List<String>, boards: List<StationBoard>, now: LocalDateTime): List<MovingTrain> {
+    /** [viaIndex]: Position des Via-Bahnhofs im Korridor, falls eine Streckenführung gewählt ist. */
+    fun find(
+        corridor: List<String>,
+        boards: List<StationBoard>,
+        now: LocalDateTime,
+        viaIndex: Int? = null,
+    ): List<MovingTrain> {
         if (corridor.size < 2) return emptyList()
         val indexCache = HashMap<String, Int>()
         fun indexOf(name: String) = indexCache.getOrPut(name) {
@@ -37,10 +43,16 @@ object MovingTrainFinder {
                 groups.getOrPut(key) { mutableListOf() }.add(Obs(board.index, e, routeIdx))
             }
         }
-        return groups.mapNotNull { (key, obs) -> assemble(key, obs, fetched, now) }
+        return groups.mapNotNull { (key, obs) -> assemble(key, obs, fetched, now, viaIndex) }
     }
 
-    private fun assemble(key: String, all: List<Obs>, fetched: Set<Int>, now: LocalDateTime): MovingTrain? {
+    private fun assemble(
+        key: String,
+        all: List<Obs>,
+        fetched: Set<Int>,
+        now: LocalDateTime,
+        viaIndex: Int?,
+    ): MovingTrain? {
         val obs = all.filterNot { it.entry.isCancelled }
         if (obs.isEmpty()) return null
 
@@ -52,6 +64,12 @@ object MovingTrainFinder {
         val entry = if (dir > 0) onPath.min() else onPath.max()
         val exit = if (dir > 0) onPath.max() else onPath.min()
         if (entry == exit) return null
+
+        // Gewählte Streckenführung: Ein Zug, der Bahnhöfe vor und hinter dem Via-Bahnhof
+        // berührt, ihn selbst aber auslässt, fährt über eine andere Strecke.
+        if (viaIndex != null && onPath.min() < viaIndex && onPath.max() > viaIndex && viaIndex !in onPath) {
+            return null
+        }
 
         val points = obs.flatMap { o ->
             val e = o.entry

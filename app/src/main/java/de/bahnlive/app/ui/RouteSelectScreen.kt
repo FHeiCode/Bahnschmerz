@@ -59,8 +59,11 @@ fun RouteSelectScreen(
 ) {
     var from by rememberSaveable { mutableStateOf("") }
     var to by rememberSaveable { mutableStateOf("") }
-    val canSubmit = from.isNotBlank() && to.isNotBlank() && from.trim() != to.trim()
-    val submit = { if (canSubmit) onOpen(SavedRoute(from.trim(), to.trim())) }
+    var via by rememberSaveable { mutableStateOf("") }
+    val viaOrNull = via.trim().takeIf { it.isNotEmpty() }
+    val canSubmit = from.isNotBlank() && to.isNotBlank() && from.trim() != to.trim() &&
+        viaOrNull != from.trim() && viaOrNull != to.trim()
+    val submit = { if (canSubmit) onOpen(SavedRoute(from.trim(), to.trim(), viaOrNull)) }
 
     Scaffold(
         topBar = {
@@ -95,7 +98,15 @@ fun RouteSelectScreen(
                                 Icon(Icons.Default.SwapVert, contentDescription = "Richtung tauschen")
                             }
                         }
-                        StationField("Nach", to, { to = it }, ImeAction.Search) { submit() }
+                        StationField("Nach", to, { to = it }, ImeAction.Next) {}
+                        Spacer(Modifier.height(8.dp))
+                        StationField("Über (optional)", via, { via = it }, ImeAction.Search) { submit() }
+                        Text(
+                            "Legt die Streckenführung fest – es zählen nur Züge über diesen Bahnhof.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
                         Spacer(Modifier.height(12.dp))
                         Button(onClick = submit, enabled = canSubmit, modifier = Modifier.fillMaxWidth()) {
                             Text("Echtzeitdaten anzeigen")
@@ -136,6 +147,13 @@ fun RouteSelectScreen(
                                         Modifier.padding(end = 4.dp).height(16.dp),
                                     )
                                     Text(route.to, style = MaterialTheme.typography.bodyLarge)
+                                }
+                                route.via?.takeIf { it.isNotBlank() }?.let {
+                                    Text(
+                                        "über $it",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
                                 }
                             }
                             IconButton(onClick = { onDelete(route) }) {

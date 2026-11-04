@@ -10,6 +10,8 @@ Sie zeigt alle direkten Züge, die in A abfahren und B anfahren – mit Live-Dat
 - Zugausfälle und entfallende Halte
 - Meldungen der DB (z. B. Grund der Verspätung)
 - Zwischenhalte (Antippen einer Karte klappt Details auf)
+- Optional **„Über“**: legt die Streckenführung fest (z. B. Frankfurt → Mannheim über Darmstadt);
+  es zählen dann nur Züge, die über diesen Bahnhof fahren
 - Gespeicherte Lieblingsstrecken, Gegenrichtung per Knopfdruck
 - Automatische Aktualisierung jede Minute, solange die App sichtbar ist; Pull-to-Refresh
 - **Gerade unterwegs**: alle Züge, die sich jetzt zwischen A und B befinden – in beiden
@@ -79,7 +81,11 @@ Voraussetzungen: JDK 17, Android SDK 35, minSdk 26 (Android 8.0).
 
 Bahnhofsname, möglichst so geschrieben wie bei der DB (z. B. `Köln Hbf`,
 `Frankfurt(Main)Hbf`). Die Vorschläge unter dem Eingabefeld helfen dabei. Bei mehrdeutigen
-Namen zeigt die App Vorschläge des Servers an. EVA-Nummern und DS100-Kürzel werden
+Namen zeigt die App Vorschläge des Servers an.
+
+Das Feld **Über** ist optional. Gibt es zwischen zwei Bahnhöfen mehrere Strecken, wählt man
+damit eine aus. Abfahrten, Liste „Gerade unterwegs“ und Karte zeigen dann nur Züge, die
+zwischen Start und Ziel über diesen Bahnhof fahren. Seine Tafel wird immer mit abgefragt. EVA-Nummern und DS100-Kürzel werden
 nicht unterstützt, weil die Strecke über die Bahnhofsnamen im Laufweg erkannt wird.
 
 ## Projektstruktur
@@ -109,8 +115,8 @@ app/src/main/java/de/bahnlive/app/
 - „Gerade unterwegs“: Ein Zug, der auf einer sehr langen Strecke an keinem der sechs
   abgefragten Bahnhöfe innerhalb ihres Zeitfensters auftaucht, fehlt. Bei Strecken mit
   vielen Halten zwischen den Messpunkten ist die Position ungenauer.
-- Weichen Züge auf eine Parallelstrecke aus, zeichnet die Karte sie trotzdem auf der
-  Hauptlinie (der Bahnhofsfolge mit den meisten Halten).
+- Ohne „Über“ zeichnet die Karte Züge einer Parallelstrecke auf der Hauptlinie (der
+  Bahnhofsfolge mit den meisten Halten). Mit „Über“ werden sie ausgeblendet.
 - Zeitfenster: etwa die nächsten 3 Stunden (Vorgabe von DBF).
 - Abdeckung wie DB IRIS: Fern- und Regionalverkehr, S-Bahn; keine Busse/Trams.
 
