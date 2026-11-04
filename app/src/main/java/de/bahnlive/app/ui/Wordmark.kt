@@ -25,7 +25,7 @@ private data class Twist(val rotation: Float, val dy: Float, val scaleY: Float, 
 private val SCHMERZ = listOf(
     Twist(-9f, 2f, 1.06f, 0f),
     Twist(7f, -3f, 0.92f, 1f),
-    Twist(-4f, 3f, 1.04f, -1f),
+    Twist(-4f, 3f, 1.04f, 0f),
     Twist(11f, -2f, 0.94f, 1f),
     Twist(-7f, 4f, 1.10f, 0f),
     Twist(5f, -4f, 0.90f, 1f),
@@ -73,7 +73,8 @@ fun BahnSchmerzWordmark(modifier: Modifier = Modifier, fontSize: TextUnit = 22.s
                     fontSize = fontSize,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier
-                        .padding(start = with(LocalDensity.current) { (t.gap * unit).toDp() })
+                        // Innenabstand darf nie negativ sein – Android beendet sonst die App.
+                        .padding(start = with(LocalDensity.current) { (t.gap * unit).coerceAtLeast(0f).toDp() })
                         .graphicsLayer {
                             rotationZ = t.rotation
                             translationY = t.dy * unit
