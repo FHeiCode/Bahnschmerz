@@ -3,14 +3,21 @@ package de.bahnlive.app.data
 import kotlinx.serialization.Serializable
 import java.time.LocalDateTime
 
-/** Eine vom Nutzer gespeicherte Strecke (Start- und Zielbahnhof). */
+/**
+ * Eine vom Nutzer gespeicherte Strecke (Start- und Zielbahnhof).
+ * [via] legt optional die Streckenführung fest: Nur Züge über diesen Bahnhof zählen.
+ */
 @Serializable
 data class SavedRoute(
     val from: String,
     val to: String,
+    val via: String? = null,
 ) {
-    val id: String get() = "${from.trim().lowercase()}→${to.trim().lowercase()}"
-    fun reversed() = SavedRoute(from = to, to = from)
+    val id: String
+        get() = "${from.trim().lowercase()}→${to.trim().lowercase()}" +
+            (via?.takeIf { it.isNotBlank() }?.let { "|über ${it.trim().lowercase()}" } ?: "")
+
+    fun reversed() = SavedRoute(from = to, to = from, via = via)
 }
 
 /** Ein Halt im Laufweg eines Zuges. */

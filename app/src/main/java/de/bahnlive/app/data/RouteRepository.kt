@@ -33,7 +33,10 @@ class RouteRepository(private val api: DbfApi = DbfApi()) {
 
                 // Bahnhofsfolge der Strecke und einige Zwischenbahnhöfe als zusätzliche Messpunkte.
                 val corridor = corridorFor(route, forward, backward)
-                val extra = sampleIndices(corridor, forward + backward).map { i ->
+                val viaIndex = route.via?.takeIf { it.isNotBlank() }
+                    ?.let { via -> corridor.indexOfFirst { sameStation(it, via) } }
+                    ?.takeIf { it > 0 }
+                val extra = sampleIndices(corridor, forward + backward, viaIndex).map { i ->
                     async { optional { api.board(corridor[i], optional = true) }?.let { MovingTrainFinder.StationBoard(i, it) } }
                 }
                 val boards = buildList {
@@ -46,7 +49,7 @@ class RouteRepository(private val api: DbfApi = DbfApi()) {
                     connections = forward
                         .filter { !it.departureExpected.isBefore(now.minusMinutes(1)) }
                         .sortedBy { it.departureExpected },
-                    moving = MovingTrainFinder.find(corridor, boards, now),
+                    moving = MovingTrainFinder.find(corridor, boards, now, viaIndex),
                     corridor = corridor,
                     fetchedAt = now,
                 )
@@ -75,6 +78,14 @@ class RouteRepository(private val api: DbfApi = DbfApi()) {
 
         val originIndex = dep.route.indexOfFirst { sameStation(it.name, route.from) }
         if (originIndex >= 0 && destIndex in 0 until originIndex) return@mapNotNull null
+
+        // Streckenführung: Der Zug muss zwischen Start und Ziel über den Via-Bahnhof fahren.
+        route.via?.takeIf { it.isNotBlank() }?.let { via ->
+            val viaIndex = dep.route.indexOfFirst { sameStation(it.name, via) }
+            if (viaIndex < 0) return@mapNotNull null
+            if (originIndex >= 0 && viaIndex <= originIndex) return@mapNotNull null
+            if (destIndex >= 0 && viaIndex >= destIndex) return@mapNotNull null
+        }
 
         // Passende Zeile auf der Zieltafel (gleicher Zug, Ankunft nach Abfahrt).
         val arrival = dest
@@ -136,7 +147,8 @@ class RouteRepository(private val api: DbfApi = DbfApi()) {
         val candidates =
             forward.map { c -> listOf(route.from) + c.stopsBetween.map { it.name } + route.to } +
                 backward.map { c -> (listOf(route.to) + c.stopsBetween.map { it.name } + route.from).reversed() }
-        val best = candidates.maxByOrNull { it.size } ?: listOf(route.from, route.to)
+        val best = candidates.maxByOrNull { it.size }
+            ?: listOfNotNull(route.from, route.via?.takeIf { it.isNotBlank() }, route.to)
         synchronized(corridors) {
             val previous = corridors[route.id]
             val chosen = if (previous != null && previous.size >= best.size) previous else best
@@ -149,17 +161,22 @@ class RouteRepository(private val api: DbfApi = DbfApi()) {
      * Wählt bis zu [MAX_EXTRA_BOARDS] Zwischenbahnhöfe, gleichmäßig über die Strecke verteilt.
      * Pro Abschnitt der Bahnhof, an dem die meisten Züge halten (dort halten auch Fernzüge).
      */
-    private fun sampleIndices(corridor: List<String>, connections: List<Connection>): List<Int> {
+    private fun sampleIndices(corridor: List<String>, connections: List<Connection>, viaIndex: Int?): List<Int> {
         val interior = (1 until corridor.lastIndex).toList()
         if (interior.isEmpty()) return emptyList()
-        val bins = minOf(MAX_EXTRA_BOARDS, interior.size)
+        // Der Via-Bahnhof wird immer abgefragt: Dort fahren alle Züge der gewählten Führung durch.
+        val fixed = listOfNotNull(viaIndex?.takeIf { it in interior })
+        val bins = minOf(MAX_EXTRA_BOARDS - fixed.size, interior.size)
+        if (bins <= 0) return fixed
         val score = interior.associateWith { i ->
             connections.count { c -> c.stopsBetween.any { sameStation(it.name, corridor[i]) } }
         }
-        return (0 until bins).mapNotNull { bin ->
+        val spread = (0 until bins).mapNotNull { bin ->
             interior.subList(bin * interior.size / bins, (bin + 1) * interior.size / bins)
+                .filterNot { it in fixed }
                 .maxByOrNull { score[it] ?: 0 }
-        }.distinct()
+        }
+        return (fixed + spread).distinct().take(MAX_EXTRA_BOARDS)
     }
 
     private fun sameTrain(a: BoardEntry, b: BoardEntry): Boolean =
