@@ -121,7 +121,7 @@ Der Workflow `.github/workflows/android.yml` baut die APK automatisch:
 | Auslöser | Ergebnis |
 |---|---|
 | Push auf `main` oder Pull Request | APK unter **Actions → Lauf → Artifacts** (ZIP mit der APK) |
-| Tag `v…` pushen, z. B. `v1.0.0` | zusätzlich ein **GitHub-Release** mit der APK zum Herunterladen |
+| Neue Nummer in `version.txt` auf `main` oder Tag `v…` | zusätzlich ein **GitHub-Release** mit der APK zum Herunterladen |
 | „Run workflow“ im Actions-Tab | manueller Build |
 
 ### Einmalig: Signaturschlüssel hinterlegen
@@ -143,11 +143,17 @@ Schlüssel und Passwort gut aufbewahren und **nie** ins Repository legen.
 
 ### Neue Version veröffentlichen
 
+Am einfachsten: In `version.txt` die neue Versionsnummer eintragen (z. B. `1.2.0`) und nach
+`main` übernehmen. Der Build legt dann automatisch das Release `v1.2.0` mit der APK an.
+Bleibt die Nummer gleich, entsteht kein neues Release.
+
+Alternativ geht weiterhin ein Tag:
+
 ```bash
-git tag v1.0.1
-git push origin v1.0.1
+git tag v1.2.0
+git push origin v1.2.0
 ```
 
-Nach wenigen Minuten liegt `Bahnschmerz-1.0.1.apk` unter **Releases**. Diesen Link kannst
+Nach wenigen Minuten liegt `Bahnschmerz-1.2.0.apk` unter **Releases**. Diesen Link kannst
 du weitergeben. Auf dem Handy muss einmalig „Installation aus unbekannten Quellen“ für den
 Browser erlaubt werden.
