@@ -75,6 +75,8 @@ dependencies {
 
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.osmdroid:osmdroid-android:6.1.20")
+    // Strecken per Ziehen sortieren (https://github.com/Calvin-LL/Reorderable)
+    implementation("sh.calvin.reorderable:reorderable:3.1.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 }

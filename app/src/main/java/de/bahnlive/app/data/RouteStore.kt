@@ -21,8 +21,16 @@ class RouteStore(private val context: Context) {
             ?: DEFAULT_ROUTES
     }
 
+    /** Neue Strecken kommen nach oben; bekannte behalten ihren Platz (eigene Sortierung bleibt). */
     suspend fun add(route: SavedRoute) = update { list ->
-        (listOf(route) + list.filterNot { it.id == route.id })
+        if (list.any { it.id == route.id }) list else listOf(route) + list
+    }
+
+    /** Speichert die vom Nutzer per Ziehen festgelegte Reihenfolge. */
+    suspend fun reorder(ordered: List<SavedRoute>) = update { current ->
+        // Nur bekannte Strecken übernehmen; zwischenzeitlich hinzugekommene vorn behalten.
+        val ids = ordered.map { it.id }.toSet()
+        current.filterNot { it.id in ids } + ordered.filter { o -> current.any { it.id == o.id } }
     }
 
     suspend fun remove(route: SavedRoute) = update { list -> list.filterNot { it.id == route.id } }

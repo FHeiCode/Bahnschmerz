@@ -39,6 +39,7 @@ class MainActivity : ComponentActivity() {
                         savedRoutes = routes,
                         onOpen = viewModel::open,
                         onDelete = viewModel::remove,
+                        onReorder = viewModel::reorder,
                     )
                 } else {
                     BackHandler { viewModel.close() }

@@ -14,7 +14,8 @@ Sie zeigt alle direkten Züge, die in A abfahren und B anfahren – mit Live-Dat
 - Zwischenhalte (Antippen einer Karte klappt Details auf)
 - Optional **„Über“**: legt die Streckenführung fest (z. B. Frankfurt → Mannheim über Darmstadt);
   es zählen dann nur Züge, die über diesen Bahnhof fahren
-- Gespeicherte Lieblingsstrecken, Gegenrichtung per Knopfdruck
+- Gespeicherte Lieblingsstrecken, Gegenrichtung per Knopfdruck; Reihenfolge per Ziehen
+  am Griff (≡) links neben der Strecke frei sortierbar
 - Automatische Aktualisierung jede Minute, solange die App sichtbar ist; Pull-to-Refresh
 - **Gerade unterwegs**: alle Züge, die sich jetzt zwischen A und B befinden – in beiden
   Richtungen und unabhängig davon, wann sie am Start abgefahren sind. Als Liste oben im
