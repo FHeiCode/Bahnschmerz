@@ -1,0 +1,15 @@
+name: Diagnose Gleisverlauf
+
+on:
+  push:
+    branches: [diagnose]
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: München Hbf -> Nürnberg Hbf
+        run: python3 -u tools/diagnose.py "München Hbf" "Nürnberg Hbf"
