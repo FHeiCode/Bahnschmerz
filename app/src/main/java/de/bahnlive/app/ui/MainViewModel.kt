@@ -16,6 +16,8 @@ import de.bahnlive.app.data.TrackRepository
 import de.bahnlive.app.data.TripEnricher
 import de.bahnlive.app.data.VendoApi
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.CancellationException
+import de.bahnlive.app.CrashReporter
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -107,7 +109,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun refreshNow() {
         val route = _board.value?.route ?: return
-        viewModelScope.launch { load(route) }
+        viewModelScope.launch { guarded("Laden der Echtzeitdaten") { load(route) } }
     }
 
     /** Lädt alle 60 Sekunden neu – häufiger aktualisiert die Datenquelle ohnehin nicht. */
@@ -116,7 +118,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         refreshJob?.cancel()
         refreshJob = viewModelScope.launch {
             while (isActive) {
-                load(route)
+                guarded("Laden der Echtzeitdaten") { load(route) }
                 delay(REFRESH_MILLIS)
             }
         }
@@ -140,8 +142,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             var shapes = emptyList<List<LatLon>>()
             var unavailable = false
             if (useDbTrips.value && result.moving.isNotEmpty()) {
-                val enriched = withTimeoutOrNull(ENRICH_TIMEOUT_MILLIS) {
-                    enricher.enrich(result.corridor, result.moving, result.fetchedAt)
+                val enriched = try {
+                    withTimeoutOrNull(ENRICH_TIMEOUT_MILLIS) {
+                        enricher.enrich(result.corridor, result.moving, result.fetchedAt)
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    // Fehler im Fahrtverlauf → Schätzung bleibt, App läuft weiter.
+                    CrashReporter.record(getApplication<Application>(), "DB-Fahrtverlauf", e, fatal = false)
+                    null
                 }
                 if (enriched != null) {
                     moving = enriched.moving
@@ -211,13 +221,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // Start und Ziel zuerst – damit kann die Karte schon Züge zeigen.
         val ordered = missing.sortedBy { if (it == state.route.from || it == state.route.to) 0 else 1 }
         geocodeJob = viewModelScope.launch {
-            for (name in ordered) {
-                if (_board.value?.route != state.route) break
-                if (name in (_board.value?.coordinates ?: emptyMap())) continue
-                val found = locator.locate(name) ?: continue
-                _board.update { it?.copy(coordinates = it.coordinates + (name to found)) }
+            guarded("Suchen der Bahnhofskoordinaten") {
+                for (name in ordered) {
+                    if (_board.value?.route != state.route) break
+                    if (name in (_board.value?.coordinates ?: emptyMap())) continue
+                    val found = locator.locate(name) ?: continue
+                    _board.update { it?.copy(coordinates = it.coordinates + (name to found)) }
+                }
+                loadTrack()
             }
-            loadTrack()
         }
     }
 
@@ -231,16 +243,35 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (stations.size < 2 || stations.first().first != 0 || stations.last().first != state.corridor.lastIndex) return
         if (stations == state.trackFor || trackJob?.isActive == true) return
         trackJob = viewModelScope.launch {
-            _board.update { if (it == null || it.route != state.route) it else it.copy(trackStatus = "Gleise werden geladen …") }
-            val outcome = tracks.track(stations)
+            guarded("Laden der Gleise") {
+                _board.update { if (it == null || it.route != state.route) it else it.copy(trackStatus = "Gleise werden geladen …") }
+                val outcome = tracks.track(stations)
+                _board.update {
+                    if (it == null || it.route != state.route || it.corridor != state.corridor) it
+                    else it.copy(
+                        track = if (outcome.segments.isEmpty()) it.track else outcome.segments,
+                        // Bei einem Fehler später erneut versuchen (trackFor bleibt dann unverändert).
+                        trackFor = if (outcome.problem == null) stations else it.trackFor,
+                        trackStatus = outcome.problem?.let { p -> "Gleise: $p" },
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Führt Hintergrundarbeit aus, ohne dass ein Fehler darin die App beendet. Der Fehler
+     * wird für den Absturzbericht gespeichert und als Hinweis angezeigt.
+     */
+    private suspend fun guarded(what: String, block: suspend () -> Unit) {
+        try {
+            block()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            CrashReporter.record(getApplication<Application>(), what, e, fatal = false)
             _board.update {
-                if (it == null || it.route != state.route || it.corridor != state.corridor) it
-                else it.copy(
-                    track = if (outcome.segments.isEmpty()) it.track else outcome.segments,
-                    // Bei einem Fehler später erneut versuchen (trackFor bleibt dann unverändert).
-                    trackFor = if (outcome.problem == null) stations else it.trackFor,
-                    trackStatus = outcome.problem?.let { p -> "Gleise: $p" },
-                )
+                it?.copy(loading = false, error = "Fehler beim $what (${e.javaClass.simpleName}). Die App läuft weiter.")
             }
         }
     }

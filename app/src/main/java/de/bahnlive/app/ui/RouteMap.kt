@@ -71,14 +71,17 @@ fun rememberStationMapData(state: BoardState): StationMapData {
             now = LocalDateTime.now()
         }
     }
+    // Rechenfehler dürfen nur die Karte betreffen, nie die App beenden.
     val geometry = remember(state.corridor, state.coordinates, state.track, state.dbShapes) {
-        // Gleise aus OSM; wo die fehlen, der Linienverlauf aus dem DB-Fahrtverlauf.
-        val stations = state.corridor.mapIndexedNotNull { i, n -> state.coordinates[n]?.let { i to it } }
-        val fromDb = RailRouter.segmentsFromPolylines(state.dbShapes, stations)
-        CorridorGeometry.build(state.corridor, { state.coordinates[it] }, state.track, fromDb)
+        runCatching {
+            // Gleise aus OSM; wo die fehlen, der Linienverlauf aus dem DB-Fahrtverlauf.
+            val stations = state.corridor.mapIndexedNotNull { i, n -> state.coordinates[n]?.let { i to it } }
+            val fromDb = runCatching { RailRouter.segmentsFromPolylines(state.dbShapes, stations) }.getOrDefault(emptyMap())
+            CorridorGeometry.build(state.corridor, { state.coordinates[it] }, state.track, fromDb)
+        }.getOrNull()
     }
     val statuses = remember(state.moving, geometry, now) {
-        state.moving.mapNotNull { PositionEstimator.status(it, geometry, now) }
+        state.moving.mapNotNull { runCatching { PositionEstimator.status(it, geometry, now) }.getOrNull() }
     }
     return StationMapData(geometry, statuses)
 }
@@ -132,7 +135,7 @@ fun RouteMap(state: BoardState, data: StationMapData, modifier: Modifier = Modif
     Box(modifier) {
         AndroidView(
             factory = { mapView },
-            update = { map -> render(map, state, data.geometry, positions) },
+            update = { map -> runCatching { render(map, state, data.geometry, positions) } },
         )
 
         if (state.fetchedAt != null && positions.isEmpty()) {

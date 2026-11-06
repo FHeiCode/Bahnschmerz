@@ -65,10 +65,15 @@ class TrackRepository(context: Context) {
                 segments += withContext(Dispatchers.Default) {
                     RailRouter.segments(RailRouter.parseOverpass(body), chunk)
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: IOException) {
                 problem = e.message ?: "nicht erreichbar"
             } catch (e: OutOfMemoryError) {
                 problem = "Antwort zu groß"
+            } catch (e: Throwable) {
+                // Jeder andere Fehler (z. B. kaputte Antwort) darf die App nicht beenden.
+                problem = "Fehler beim Auswerten (${e.javaClass.simpleName})"
             }
         }
         val outcome = TrackOutcome(segments, problem ?: if (segments.isEmpty()) "kein Gleisweg gefunden" else null)
