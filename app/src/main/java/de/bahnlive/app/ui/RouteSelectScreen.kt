@@ -21,6 +21,7 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Switch
 import androidx.compose.runtime.remember
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -66,6 +67,8 @@ fun RouteSelectScreen(
     onOpen: (SavedRoute) -> Unit,
     onDelete: (SavedRoute) -> Unit,
     onReorder: (List<SavedRoute>) -> Unit,
+    useDbTrips: Boolean,
+    onUseDbTripsChange: (Boolean) -> Unit,
 ) {
     // Lokale Kopie, damit sich die Liste beim Ziehen sofort bewegt; gespeichert wird beim Loslassen.
     var routes by remember(savedRoutes) { mutableStateOf(savedRoutes) }
@@ -206,8 +209,29 @@ fun RouteSelectScreen(
             }
 
             item {
+                Card(Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                    Row(
+                        Modifier.padding(start = 16.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Genauere Zugpositionen", style = MaterialTheme.typography.bodyLarge)
+                            Text(
+                                "Nutzt den DB-Fahrtverlauf mit Zeiten an allen Halten (inoffizielle " +
+                                    "Schnittstelle). Ist sie nicht erreichbar, schätzt die App wie bisher.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Switch(checked = useDbTrips, onCheckedChange = onUseDbTripsChange)
+                    }
+                }
+            }
+
+            item {
                 Text(
-                    "Daten: DB IRIS über dbf.finalrewind.org · Aktualisierung jede Minute",
+                    "Daten: DB IRIS über dbf.finalrewind.org, DB-Fahrtverlauf, Gleise © OpenStreetMap · Aktualisierung jede Minute",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 16.dp),

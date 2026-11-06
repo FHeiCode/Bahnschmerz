@@ -23,52 +23,82 @@ data class TrainStatus(
 )
 
 /**
- * Geometrie der Strecke: Koordinaten der Bahnhöfe in Reihenfolge. Fehlende Koordinaten
- * werden zwischen den Nachbarn aufgefüllt, damit jeder Bahnhof eine Kilometerposition hat.
+ * Geometrie der Strecke als Linienzug. Zwischen zwei Bahnhöfen verläuft sie entlang der
+ * echten Gleise (OpenStreetMap), sofern bekannt, sonst als gerade Linie. Bahnhöfe ohne
+ * Koordinaten bekommen eine Kilometerposition zwischen ihren Nachbarn.
  */
 class CorridorGeometry private constructor(
+    /** Punkte des Linienzugs (Gleisverlauf). */
     val points: List<LatLon>,
     private val cumulative: List<Double>,
+    private val stationKm: DoubleArray,
+    /** Anteil der Abschnitte, die echten Gleisen folgen (0..1). */
+    val trackShare: Double,
 ) {
     /** Kilometer ab Start für Bahnhof [index]. */
-    fun km(index: Int): Double = cumulative[index.coerceIn(0, cumulative.lastIndex)]
+    fun km(index: Int): Double = stationKm[index.coerceIn(0, stationKm.lastIndex)]
 
     fun pointAt(km: Double): LatLon {
         val d = km.coerceIn(0.0, cumulative.last())
-        for (i in 0 until points.lastIndex) {
-            val a = cumulative[i]
-            val b = cumulative[i + 1]
-            if (d <= b || i == points.lastIndex - 1) {
-                val t = if (b > a) ((d - a) / (b - a)).coerceIn(0.0, 1.0) else 0.0
-                val p = points[i]
-                val q = points[i + 1]
-                return LatLon(p.lat + (q.lat - p.lat) * t, p.lon + (q.lon - p.lon) * t)
-            }
+        // Binäre Suche: Gleisverläufe haben oft Tausende Punkte.
+        var lo = 0
+        var hi = points.lastIndex
+        while (hi - lo > 1) {
+            val mid = (lo + hi) / 2
+            if (cumulative[mid] <= d) lo = mid else hi = mid
         }
-        return points.last()
+        if (hi == 0) return points.first()
+        val a = cumulative[lo]
+        val b = cumulative[hi]
+        val t = if (b > a) ((d - a) / (b - a)).coerceIn(0.0, 1.0) else 0.0
+        val p = points[lo]
+        val q = points[hi]
+        return LatLon(p.lat + (q.lat - p.lat) * t, p.lon + (q.lon - p.lon) * t)
     }
 
     companion object {
-        fun build(corridor: List<String>, coords: (String) -> LatLon?): CorridorGeometry? {
+        /**
+         * [track]: Gleisverlauf je Abschnitt, Schlüssel = Korridor-Index des Abschnittsbeginns
+         * (siehe [RailRouter.segments]). Passt ein Abschnitt nicht zu den Koordinaten, wird er
+         * ignoriert und die gerade Linie genommen.
+         */
+        fun build(
+            corridor: List<String>,
+            coords: (String) -> LatLon?,
+            track: Map<Int, List<LatLon>> = emptyMap(),
+        ): CorridorGeometry? {
             if (corridor.size < 2) return null
             val raw = corridor.map(coords)
-            val known = raw.indices.filter { raw[it] != null }
             // Start und Ziel braucht es mindestens, sonst ist die Lage unklar.
             if (raw.first() == null || raw.last() == null) return null
-            val filled = raw.indices.map { i ->
-                raw[i] ?: run {
-                    val prev = known.last { it < i }
-                    val next = known.first { it > i }
-                    val t = (i - prev).toDouble() / (next - prev)
-                    val p = raw[prev]!!
-                    val q = raw[next]!!
-                    LatLon(p.lat + (q.lat - p.lat) * t, p.lon + (q.lon - p.lon) * t)
-                }
+            val known = raw.indices.filter { raw[it] != null }
+
+            val points = ArrayList<LatLon>()
+            val cumulative = ArrayList<Double>()
+            fun add(p: LatLon) {
+                cumulative.add(if (points.isEmpty()) 0.0 else cumulative.last() + distanceKm(points.last(), p))
+                points.add(p)
             }
-            val cumulative = ArrayList<Double>(filled.size)
-            cumulative.add(0.0)
-            for (i in 1 until filled.size) cumulative.add(cumulative[i - 1] + distanceKm(filled[i - 1], filled[i]))
-            return CorridorGeometry(filled, cumulative)
+            val stationKm = DoubleArray(corridor.size)
+            var onTrack = 0
+            add(raw[known.first()]!!)
+            for (k in 0 until known.lastIndex) {
+                val a = known[k]
+                val b = known[k + 1]
+                val pa = raw[a]!!
+                val pb = raw[b]!!
+                val seg = track[a]?.takeIf {
+                    it.size >= 2 && distanceKm(it.first(), pa) < 2.0 && distanceKm(it.last(), pb) < 2.0
+                }
+                if (seg != null) onTrack++
+                val startKm = cumulative.last()
+                (seg ?: listOf(pa, pb)).drop(1).forEach(::add)
+                val endKm = cumulative.last()
+                stationKm[b] = endKm
+                for (i in a + 1 until b) stationKm[i] = startKm + (endKm - startKm) * (i - a) / (b - a)
+            }
+            val share = if (known.size > 1) onTrack.toDouble() / (known.size - 1) else 0.0
+            return CorridorGeometry(points, cumulative, stationKm, share)
         }
 
         fun distanceKm(a: LatLon, b: LatLon): Double {
@@ -95,7 +125,9 @@ object PositionEstimator {
 
     fun status(t: MovingTrain, geo: CorridorGeometry?, now: LocalDateTime): TrainStatus? {
         val next = t.points.firstOrNull { it.time.isAfter(now) }
-        val delay = next?.delay ?: t.points.lastOrNull { !it.time.isAfter(now) }?.delay
+        // Aktuellste bekannte Verspätung: nächste Prognose, sonst die zuletzt gemessene.
+        val delay = t.points.firstOrNull { it.time.isAfter(now) && it.delay != null }?.delay
+            ?: t.points.lastOrNull { !it.time.isAfter(now) && it.delay != null }?.delay
         if (!roughlyMoving(t, now)) return null
         if (geo == null) return TrainStatus(t, null, null, delay, next)
 

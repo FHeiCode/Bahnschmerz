@@ -32,6 +32,7 @@ class MainActivity : ComponentActivity() {
             BahnLiveTheme {
                 val board by viewModel.board.collectAsStateWithLifecycle()
                 val routes by viewModel.savedRoutes.collectAsStateWithLifecycle()
+                val useDbTrips by viewModel.useDbTrips.collectAsStateWithLifecycle()
 
                 val current = board
                 if (current == null) {
@@ -40,6 +41,8 @@ class MainActivity : ComponentActivity() {
                         onOpen = viewModel::open,
                         onDelete = viewModel::remove,
                         onReorder = viewModel::reorder,
+                        useDbTrips = useDbTrips,
+                        onUseDbTripsChange = viewModel::setUseDbTrips,
                     )
                 } else {
                     BackHandler { viewModel.close() }

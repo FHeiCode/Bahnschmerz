@@ -70,8 +70,8 @@ fun rememberStationMapData(state: BoardState): StationMapData {
             now = LocalDateTime.now()
         }
     }
-    val geometry = remember(state.corridor, state.coordinates) {
-        CorridorGeometry.build(state.corridor) { state.coordinates[it] }
+    val geometry = remember(state.corridor, state.coordinates, state.track) {
+        CorridorGeometry.build(state.corridor, { state.coordinates[it] }, state.track)
     }
     val statuses = remember(state.moving, geometry, now) {
         state.moving.mapNotNull { PositionEstimator.status(it, geometry, now) }
@@ -150,12 +150,12 @@ fun RouteMap(state: BoardState, data: StationMapData, modifier: Modifier = Modif
             }
         }
 
-        Legend(positions, Modifier.align(Alignment.BottomStart).padding(start = 8.dp, bottom = 24.dp))
+        Legend(positions, data.geometry?.trackShare ?: 0.0, Modifier.align(Alignment.BottomStart).padding(start = 8.dp, bottom = 24.dp))
     }
 }
 
 @Composable
-private fun Legend(positions: List<TrainStatus>, modifier: Modifier) {
+private fun Legend(positions: List<TrainStatus>, trackShare: Double, modifier: Modifier) {
     val counts = positions.groupingBy { it.level() }.eachCount()
     Surface(
         shape = RoundedCornerShape(8.dp),
@@ -180,6 +180,13 @@ private fun Legend(positions: List<TrainStatus>, modifier: Modifier) {
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            if (trackShare > 0) {
+                Text(
+                    "Gleise: © OpenStreetMap",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }
@@ -234,7 +241,10 @@ private fun render(map: MapView, state: BoardState, geometry: CorridorGeometry?,
                     state.corridor.getOrNull(n.index)?.let { append("<br>$it: ${n.time.format(HM)}") }
                 }
                 s.progress?.let { append("<br>${(it * 100).toInt()} % seines Weges auf dieser Strecke") }
-                append("<br>Position geschätzt")
+                append(
+                    if (t.detailed) "<br>Position aus DB-Fahrtverlauf (alle Halte)"
+                    else "<br>Position geschätzt (Abfahrtstafeln)",
+                )
             }
         })
     }

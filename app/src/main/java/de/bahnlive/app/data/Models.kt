@@ -125,4 +125,6 @@ data class MovingTrain(
     val exitBoardFetched: Boolean,
     val hasRealtime: Boolean,
     val messages: List<String>,
+    /** True, wenn die Zeiten aus dem kompletten DB-Fahrtverlauf (alle Halte) stammen. */
+    val detailed: Boolean = false,
 )

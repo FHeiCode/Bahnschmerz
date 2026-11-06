@@ -268,7 +268,14 @@ private fun UnderwayRow(s: TrainStatus, state: BoardState) {
 
 @Composable
 private fun StatusLine(state: BoardState) {
-    val text = state.fetchedAt?.let { "Stand ${it.format(TIME)} · ${state.connections.size} Züge" }
+    val detailed = state.moving.count { it.detailed }
+    val source = when {
+        state.moving.isEmpty() -> ""
+        detailed > 0 -> " · Fahrtverlauf für $detailed von ${state.moving.size} Zügen"
+        state.dbTripsUnavailable -> " · DB-Fahrtverlauf nicht erreichbar, Positionen geschätzt"
+        else -> ""
+    }
+    val text = state.fetchedAt?.let { "Stand ${it.format(TIME)} · ${state.connections.size} Züge$source" }
         ?: "Lade Echtzeitdaten …"
     Text(
         text,
