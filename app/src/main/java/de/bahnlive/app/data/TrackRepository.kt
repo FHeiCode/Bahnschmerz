@@ -17,69 +17,100 @@ import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
+import java.io.IOException
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
+/** Ergebnis der Gleisabfrage: Abschnitte und ein Satz für die Anzeige. */
+data class TrackOutcome(
+    val segments: Map<Int, List<LatLon>>,
+    /** Null = alles geladen; sonst Hinweis, z. B. „Server überlastet (HTTP 504)“. */
+    val problem: String?,
+)
+
 /**
  * Lädt Gleisverläufe aus OpenStreetMap (Overpass API) und speichert sie 30 Tage auf dem
- * Gerät. Gleise ändern sich selten, deshalb gibt es pro Strecke nur eine Abfrage.
+ * Gerät. Die Strecke wird in Stücke von etwa 40 km zerlegt, damit jede Abfrage klein
+ * bleibt; ist ein Server überlastet, wird der nächste versucht.
  * Kartendaten © OpenStreetMap-Mitwirkende (ODbL).
  */
 class TrackRepository(context: Context) {
     private val dir = File(context.filesDir, "tracks").apply { mkdirs() }
     private val client = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(90, TimeUnit.SECONDS)
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(40, TimeUnit.SECONDS)
         .build()
     private val json = Json { ignoreUnknownKeys = true }
     private val memory = HashMap<String, Map<Int, List<LatLon>>>()
-    private val failedAt = HashMap<String, Long>()
+    private val failed = HashMap<String, Pair<Long, TrackOutcome>>()
     private val mutex = Mutex()
 
     /**
      * Gleisverlauf für die Bahnhöfe [stations] (Korridor-Index, Koordinate) in Fahrtreihenfolge.
-     * Null, wenn er (noch) nicht verfügbar ist – die Karte zeichnet dann gerade Linien.
+     * Stücke, die nicht geladen werden konnten, fehlen – dort zeichnet die Karte gerade Linien.
      */
-    suspend fun track(stations: List<Pair<Int, LatLon>>): Map<Int, List<LatLon>>? = mutex.withLock {
-        if (stations.size < 2) return@withLock null
+    suspend fun track(stations: List<Pair<Int, LatLon>>): TrackOutcome = mutex.withLock {
+        if (stations.size < 2) return@withLock TrackOutcome(emptyMap(), null)
         val key = key(stations)
-        memory[key]?.let { return@withLock it }
-        readCache(key)?.let { memory[key] = it; return@withLock it }
-        // Nach einem Fehler 10 Minuten warten, um den Overpass-Server nicht zu belasten.
-        failedAt[key]?.let { if (System.currentTimeMillis() - it < 10 * 60_000L) return@withLock null }
+        memory[key]?.let { return@withLock TrackOutcome(it, null) }
+        readCache(key)?.let { memory[key] = it; return@withLock TrackOutcome(it, null) }
+        // Nach einem Fehler 5 Minuten warten, um die Server nicht zu belasten.
+        failed[key]?.let { (at, outcome) -> if (System.currentTimeMillis() - at < RETRY_MILLIS) return@withLock outcome }
 
-        // Leeres Ergebnis (z. B. Zeitüberschreitung bei Overpass) gilt als Fehler.
-        val result = runCatching { download(stations) }.getOrNull()?.takeIf { it.isNotEmpty() }
-        if (result == null) {
-            failedAt[key] = System.currentTimeMillis()
-            return@withLock null
+        val segments = HashMap<Int, List<LatLon>>()
+        var problem: String? = null
+        for (chunk in RailRouter.chunks(stations)) {
+            try {
+                val body = fetch(RailRouter.overpassQuery(chunk.map { it.second }))
+                segments += withContext(Dispatchers.Default) {
+                    RailRouter.segments(RailRouter.parseOverpass(body), chunk)
+                }
+            } catch (e: IOException) {
+                problem = e.message ?: "nicht erreichbar"
+            } catch (e: OutOfMemoryError) {
+                problem = "Antwort zu groß"
+            }
         }
-        memory[key] = result
-        writeCache(key, result)
-        result
+        val outcome = TrackOutcome(segments, problem ?: if (segments.isEmpty()) "kein Gleisweg gefunden" else null)
+        if (outcome.problem == null) {
+            memory[key] = segments
+            writeCache(key, segments)
+        } else {
+            failed[key] = System.currentTimeMillis() to outcome
+        }
+        outcome
     }
 
-    private suspend fun download(stations: List<Pair<Int, LatLon>>): Map<Int, List<LatLon>> =
-        withContext(Dispatchers.IO) {
-            val query = RailRouter.overpassQuery(stations.map { it.second })
-            val request = Request.Builder()
-                .url(OVERPASS)
-                .header("User-Agent", "BahnSchmerz-Android (Gleisverlauf für Zugkarte)")
-                .post(FormBody.Builder().add("data", query).build())
-                .build()
-            val body = client.newCall(request).execute().use { r ->
-                if (!r.isSuccessful) throw java.io.IOException("Overpass HTTP ${r.code}")
-                r.body?.string() ?: throw java.io.IOException("leere Antwort")
-            }
-            // Graph aufbauen und Wege suchen ist Rechenarbeit → nicht im IO-Pool blockieren.
-            withContext(Dispatchers.Default) {
-                RailRouter.segments(RailRouter.parseOverpass(body), stations)
+    /** Fragt die Overpass-Server der Reihe nach, bis einer eine gültige Antwort liefert. */
+    private suspend fun fetch(query: String): String = withContext(Dispatchers.IO) {
+        var last = "nicht erreichbar"
+        for (server in SERVERS) {
+            try {
+                val request = Request.Builder()
+                    .url(server)
+                    .header("User-Agent", "BahnSchmerz-Android (Gleisverlauf für Zugkarte)")
+                    .post(FormBody.Builder().add("data", query).build())
+                    .build()
+                client.newCall(request).execute().use { r ->
+                    val body = r.body?.string().orEmpty()
+                    when {
+                        !r.isSuccessful -> last = if (r.code == 429 || r.code == 504) "Server überlastet (HTTP ${r.code})" else "HTTP ${r.code}"
+                        !body.trimStart().startsWith("{") -> last = "unerwartete Antwort"
+                        // Overpass meldet Abbrüche (Zeit, Speicher) als "remark" mit Teildaten.
+                        body.contains("\"remark\"") && body.contains("runtime error") -> last = "Server-Zeitlimit"
+                        else -> return@withContext body
+                    }
+                }
+            } catch (e: IOException) {
+                last = "nicht erreichbar"
             }
         }
+        throw IOException(last)
+    }
 
     private fun key(stations: List<Pair<Int, LatLon>>): String {
-        // "v2": Format seit 1.5.1 (nur Gleispunkte, mit Weichenverbindungen) – alte Einträge verwerfen.
-        val text = "v2|" + stations.joinToString(";") { (i, p) -> "%d:%.4f,%.4f".format(java.util.Locale.ROOT, i, p.lat, p.lon) }
+        // "v3": Format seit 1.5.2 (Stückweise, nur Gleispunkte) – alte Einträge verwerfen.
+        val text = "v3|" + stations.joinToString(";") { (i, p) -> "%d:%.4f,%.4f".format(java.util.Locale.ROOT, i, p.lat, p.lon) }
         return MessageDigest.getInstance("SHA-1").digest(text.toByteArray())
             .joinToString("") { "%02x".format(it) }
     }
@@ -108,7 +139,13 @@ class TrackRepository(context: Context) {
     }
 
     companion object {
-        private const val OVERPASS = "https://overpass-api.de/api/interpreter"
+        /** Öffentliche Overpass-Server, der Reihe nach. */
+        private val SERVERS = listOf(
+            "https://overpass-api.de/api/interpreter",
+            "https://overpass.private.coffee/api/interpreter",
+            "https://overpass.kumi.systems/api/interpreter",
+        )
         private const val MAX_AGE_MILLIS = 30L * 24 * 60 * 60 * 1000
+        private const val RETRY_MILLIS = 5 * 60_000L
     }
 }

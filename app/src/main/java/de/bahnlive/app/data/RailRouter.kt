@@ -33,18 +33,85 @@ object RailRouter {
     /** Bahnhöfe weiter als das vom nächsten Gleis entfernt → kein Gleisverlauf. */
     private const val MAX_SNAP_KM = 1.5
 
-    /** Overpass-Abfrage für Gleise in der Nähe der Linie durch alle Bahnhöfe. */
+    /**
+     * Höchstens so viel länger als die Luftlinie darf ein Gleisweg sein. Echte Bögen gibt es:
+     * Flughafen München → Freising sind 18 km Gleis bei 5 km Luftlinie.
+     */
+    private const val MAX_DETOUR = 4.0
+
+    /**
+     * Teilt die Bahnhöfe in Stücke von etwa [maxKm] Luftlinie (überlappend am Rand), damit jede
+     * Overpass-Abfrage klein bleibt – rund um Großstädte ist das Gleisnetz sehr dicht.
+     */
+    fun <T> chunks(stations: List<Pair<T, LatLon>>, maxKm: Double = 40.0): List<List<Pair<T, LatLon>>> {
+        if (stations.size < 2) return emptyList()
+        val result = ArrayList<List<Pair<T, LatLon>>>()
+        var start = 0
+        while (start < stations.lastIndex) {
+            var end = start + 1
+            var km = CorridorGeometry.distanceKm(stations[start].second, stations[end].second)
+            while (end < stations.lastIndex) {
+                val next = CorridorGeometry.distanceKm(stations[end].second, stations[end + 1].second)
+                if (km + next > maxKm) break
+                km += next
+                end++
+            }
+            result.add(stations.subList(start, end + 1))
+            start = end
+        }
+        return result
+    }
+
+    /**
+     * Abschnitte aus Linienverläufen der DB (Fahrtverlauf eines Zuges): das Stück zwischen den
+     * Punkten, die den beiden Bahnhöfen am nächsten liegen. Ersatz, wo OSM nichts liefert.
+     */
+    fun segmentsFromPolylines(polylines: List<List<LatLon>>, stations: List<Pair<Int, LatLon>>): Map<Int, List<LatLon>> {
+        val result = HashMap<Int, List<LatLon>>()
+        for (k in 0 until stations.size - 1) {
+            val a = stations[k].second
+            val b = stations[k + 1].second
+            val straight = CorridorGeometry.distanceKm(a, b)
+            for (poly in polylines) {
+                val ia = nearestIndex(poly, a) ?: continue
+                val ib = nearestIndex(poly, b) ?: continue
+                if (ia == ib) continue
+                val part = if (ia < ib) poly.subList(ia, ib + 1) else poly.subList(ib, ia + 1).reversed()
+                val length = part.zipWithNext { x, y -> CorridorGeometry.distanceKm(x, y) }.sum()
+                if (length > straight * MAX_DETOUR + 5) continue
+                result[stations[k].first] = thin(part)
+                break
+            }
+        }
+        return result
+    }
+
+    private fun nearestIndex(poly: List<LatLon>, p: LatLon): Int? {
+        // Schnelle Näherung (flache Erde) – genau genug für wenige Kilometer.
+        val kx = cos(Math.toRadians(p.lat)) * 111.32
+        var best = -1
+        var bestD = Double.MAX_VALUE
+        poly.forEachIndexed { i, q ->
+            val dx = (q.lon - p.lon) * kx
+            val dy = (q.lat - p.lat) * 110.57
+            val d = dx * dx + dy * dy
+            if (d < bestD) { bestD = d; best = i }
+        }
+        return best.takeIf { it >= 0 && bestD <= MAX_SNAP_KM * MAX_SNAP_KM }
+    }
+
+    /** Overpass-Abfrage für Gleise in der Nähe der Linie durch die Bahnhöfe. */
     fun overpassQuery(stations: List<LatLon>): String {
         val maxSegmentKm = stations.zipWithNext { a, b -> CorridorGeometry.distanceKm(a, b) }.maxOrNull() ?: 0.0
         // Puffer um die gerade Verbindungslinie: lange Abschnitte weichen stärker davon ab.
-        val radiusM = (maxSegmentKm * 120).coerceIn(1500.0, 8000.0).toInt()
+        val radiusM = (maxSegmentKm * 100).coerceIn(1200.0, 5000.0).toInt()
         val line = stations.joinToString(",") { "%.5f,%.5f".format(java.util.Locale.ROOT, it.lat, it.lon) }
-        return "[out:json][timeout:60];" +
+        return "[out:json][timeout:25];" +
             // Weichenverbindungen (service=crossover) werden gebraucht: Hauptstrecken sind oft je
             // Richtung ein eigenes Gleis, verbunden nur über Weichen. Abstell-, Rangier- und
             // Anschlussgleise bleiben draußen.
             "way[\"railway\"~\"^(rail|light_rail|narrow_gauge)$\"][\"service\"!~\"^(yard|siding|spur)$\"](around:$radiusM,$line);" +
-            "out geom;"
+            "out skel geom;" // ohne Attribute → deutlich kleinere Antwort
     }
 
     fun parseOverpass(body: String): RailGraph {
@@ -102,11 +169,11 @@ object RailRouter {
             val from = snapped[k] ?: continue
             val to = snapped[k + 1] ?: continue
             val straight = CorridorGeometry.distanceKm(stations[k].second, stations[k + 1].second)
-            val path = shortestPath(graph, from, to, maxKm = straight * 3 + 5) ?: continue
+            val path = shortestPath(graph, from, to, maxKm = straight * MAX_DETOUR + 5) ?: continue
             if (path.size < 2) continue
             val length = path.zipWithNext { x, y -> CorridorGeometry.distanceKm(graph.point(x), graph.point(y)) }.sum()
             // Umwege über Nebenstrecken oder falsche Gleise erkennen.
-            if (length > straight * 2.5 + 3) continue
+            if (length > straight * MAX_DETOUR + 5) continue
             // Nur Punkte auf dem Gleis – keine Bahnhofskoordinate, die neben dem Gleis liegen kann.
             result[stations[k].first] = thin(path.map { graph.point(it) })
         }

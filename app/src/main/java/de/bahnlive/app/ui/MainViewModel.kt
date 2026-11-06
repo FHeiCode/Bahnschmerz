@@ -42,6 +42,10 @@ data class BoardState(
     val track: Map<Int, List<LatLon>> = emptyMap(),
     /** Für welche Bahnhofsfolge [track] berechnet wurde. */
     val trackFor: List<Pair<Int, LatLon>> = emptyList(),
+    /** Zustand der Gleisabfrage für die Legende: null = fertig/nichts zu tun. */
+    val trackStatus: String? = null,
+    /** Linienverläufe aus dem DB-Fahrtverlauf – Ersatz, wo OSM keine Gleise liefert. */
+    val dbShapes: List<List<LatLon>> = emptyList(),
     /** DB-Fahrtverlauf eingeschaltet, aber gerade nicht erreichbar → Schätzung aktiv. */
     val dbTripsUnavailable: Boolean = false,
     val error: String? = null,
@@ -133,6 +137,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             if (firstLoad) publish(route, result, result.moving, emptyMap(), dbUnavailable = false)
             var moving = result.moving
             var coords = emptyMap<String, LatLon>()
+            var shapes = emptyList<List<LatLon>>()
             var unavailable = false
             if (useDbTrips.value && result.moving.isNotEmpty()) {
                 val enriched = withTimeoutOrNull(ENRICH_TIMEOUT_MILLIS) {
@@ -141,10 +146,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 if (enriched != null) {
                     moving = enriched.moving
                     coords = enriched.coordinates
+                    shapes = enriched.polylines
                 }
                 unavailable = enriched == null || vendo.isPaused || moving.none { it.detailed }
             }
-            publish(route, result, moving, coords, unavailable)
+            publish(route, result, moving, coords, unavailable, shapes)
         } else if (result is BoardResult.Error) {
             _board.update { current ->
                 if (current == null || current.route != route) current
@@ -160,6 +166,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         moving: List<MovingTrain>,
         coords: Map<String, LatLon>,
         dbUnavailable: Boolean,
+        shapes: List<List<LatLon>> = emptyList(),
     ) {
         _board.update { current ->
             if (current == null || current.route != route) return@update current
@@ -171,6 +178,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 // Koordinaten aus dem Fahrtverlauf nur ergänzen, nicht ersetzen.
                 coordinates = coords + current.coordinates,
                 dbTripsUnavailable = dbUnavailable,
+                // Neue Linienverläufe zuerst, ältere behalten (höchstens 20).
+                dbShapes = if (shapes.isEmpty()) current.dbShapes else (shapes + current.dbShapes).take(20),
                 error = null,
                 fetchedAt = result.fetchedAt,
             )
@@ -222,10 +231,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (stations.size < 2 || stations.first().first != 0 || stations.last().first != state.corridor.lastIndex) return
         if (stations == state.trackFor || trackJob?.isActive == true) return
         trackJob = viewModelScope.launch {
-            val track = tracks.track(stations) ?: return@launch
+            _board.update { if (it == null || it.route != state.route) it else it.copy(trackStatus = "Gleise werden geladen …") }
+            val outcome = tracks.track(stations)
             _board.update {
                 if (it == null || it.route != state.route || it.corridor != state.corridor) it
-                else it.copy(track = track, trackFor = stations)
+                else it.copy(
+                    track = if (outcome.segments.isEmpty()) it.track else outcome.segments,
+                    // Bei einem Fehler später erneut versuchen (trackFor bleibt dann unverändert).
+                    trackFor = if (outcome.problem == null) stations else it.trackFor,
+                    trackStatus = outcome.problem?.let { p -> "Gleise: $p" },
+                )
             }
         }
     }

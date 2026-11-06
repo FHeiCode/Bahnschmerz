@@ -66,6 +66,8 @@ class CorridorGeometry private constructor(
             corridor: List<String>,
             coords: (String) -> LatLon?,
             track: Map<Int, List<LatLon>> = emptyMap(),
+            /** Ersatz-Gleisverlauf (z. B. aus dem DB-Fahrtverlauf), wenn [track] nicht passt. */
+            fallback: Map<Int, List<LatLon>> = emptyMap(),
         ): CorridorGeometry? {
             if (corridor.size < 2) return null
             val raw = corridor.map(coords)
@@ -87,9 +89,9 @@ class CorridorGeometry private constructor(
                 val pa = raw[a]!!
                 val pb = raw[b]!!
                 // Gleisabschnitt nur nehmen, wenn er wirklich zwischen diesen beiden Bahnhöfen liegt.
-                val seg = track[a]?.takeIf {
+                fun fits(it: List<LatLon>) =
                     it.size >= 2 && distanceKm(it.first(), pa) < 2.0 && distanceKm(it.last(), pb) < 2.0
-                }
+                val seg = track[a]?.takeIf(::fits) ?: fallback[a]?.takeIf(::fits)
                 if (seg != null) onTrack++
                 val line = seg ?: listOf(pa, pb)
                 // Der Abschnitt beginnt am Gleis beim Bahnhof (nicht an der Bahnhofskoordinate,

@@ -26,6 +26,8 @@ class TripEnricher(private val source: TripSource) {
         val moving: List<MovingTrain>,
         /** Bahnhofskoordinaten aus dem Fahrtverlauf, Schlüssel = Name wie im Korridor. */
         val coordinates: Map<String, LatLon>,
+        /** Linienverläufe der abgefragten Züge (DB-Gleisgeometrie). */
+        val polylines: List<List<LatLon>> = emptyList(),
     )
 
     suspend fun enrich(corridor: List<String>, moving: List<MovingTrain>, now: LocalDateTime): Result = coroutineScope {
@@ -56,7 +58,7 @@ class TripEnricher(private val source: TripSource) {
             }
             apply(t, trip, corridor, now) ?: t
         }
-        Result(result, coordinates)
+        Result(result, coordinates, trips.values.mapNotNull { it?.polyline?.takeIf { p -> p.size >= 2 } })
     }
 
     private suspend fun <T> safe(block: suspend () -> T): T? =
