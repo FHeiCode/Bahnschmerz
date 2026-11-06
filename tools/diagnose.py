@@ -89,9 +89,9 @@ ordered = [(i, coords[n]) for i, n in enumerate(corridor) if n in coords]
 for (i, a), (j, b) in zip(ordered, ordered[1:]):
     print(f"      {corridor[i]} -> {corridor[j]}: {km(a, b):.1f} km Luftlinie")
 
-# ---------- 3. Overpass wie in der App ----------
-print("\n[3] Overpass-Abfragen (Stücke wie in der App)")
-def chunks(stations, max_km=40.0):
+# ---------- 3. Overpass: Varianten mit Rechteck statt Schlauch ----------
+print("\n[3] Overpass-Varianten (Rechteck je Stück)")
+def chunks(stations, max_km=60.0):
     out, start = [], 0
     while start < len(stations) - 1:
         end = start + 1; d = km(stations[start][1], stations[end][1])
@@ -101,58 +101,48 @@ def chunks(stations, max_km=40.0):
             d += nx; end += 1
         out.append(stations[start:end + 1]); start = end
     return out
-def query(st):
-    mx = max(km(a[1], b[1]) for a, b in zip(st, st[1:]))
-    r = int(min(max(mx * 100, 1200), 5000))
-    line = ",".join(f"{p[0]:.5f},{p[1]:.5f}" for _, p in st)
-    return ('[out:json][timeout:25];way["railway"~"^(rail|light_rail|narrow_gauge)$"]'
-            f'["service"!~"^(yard|siding|spur)$"](around:{r},{line});out skel geom;')
+def bbox(st):
+    lats = [p[0] for _, p in st]; lons = [p[1] for _, p in st]
+    span = max(km((min(lats), min(lons)), (max(lats), max(lons))), 1)
+    m_km = max(10.0, span * 0.3)
+    dlat = m_km / 110.57; dlon = m_km / (111.32 * math.cos(math.radians(sum(lats) / len(lats))))
+    return f"{min(lats)-dlat:.4f},{min(lons)-dlon:.4f},{max(lats)+dlat:.4f},{max(lons)+dlon:.4f}"
+VARIANTS = {
+    "A alle Gleise ohne Abstell": lambda bb: f'[out:json][timeout:90];way["railway"="rail"]["service"!~"^(yard|siding|spur)$"]({bb});out skel geom;',
+    "B main/branch + Weichen": lambda bb: f'[out:json][timeout:90];(way["railway"="rail"]["usage"~"^(main|branch)$"]({bb});way["railway"="rail"]["service"="crossover"]({bb}););out skel geom;',
+}
 SERVERS = ["https://overpass-api.de/api/interpreter", "https://overpass.private.coffee/api/interpreter",
            "https://overpass.kumi.systems/api/interpreter"]
-segments_found = 0; segments_total = 0
-for c in chunks(ordered):
-    q = query(c)
-    print(f"  Stück {corridor[c[0][0]]} .. {corridor[c[-1][0]]} ({len(c)} Bahnhöfe)")
-    print(f"    Abfrage: {q[:160]}...")
-    data = None
+def fetch(q):
     for s in SERVERS:
         st, body, dt = get(s, {"Content-Type": "application/x-www-form-urlencoded"},
-                           urllib.parse.urlencode({"data": q}).encode(), "POST", 60)
+                           urllib.parse.urlencode({"data": q}).encode(), "POST", 120)
         remark = re.search(r'"remark"\s*:\s*"([^"]*)"', body or "")
-        print(f"    {s.split('/')[2]}: HTTP {st}, {len(body)} Bytes, {dt:.1f}s" + (f", remark: {remark.group(1)[:120]}" if remark else "")
-              + ("" if st == 200 else f", Anfang: {body[:150]!r}"))
-        if st == 200 and body.lstrip().startswith("{"):
-            data = json.loads(body); break
-    if not data:
-        print("    -> KEINE DATEN"); segments_total += len(c) - 1; continue
-    ways = [e for e in data.get("elements", []) if e.get("type") == "way"]
-    print(f"    Wege: {len(ways)}; Schlüssel des ersten: {sorted(ways[0].keys()) if ways else '-'}")
-    with_nodes = sum(1 for w in ways if "nodes" in w and "geometry" in w and len(w["nodes"]) == len(w["geometry"]))
-    print(f"    Wege mit nodes+geometry gleicher Länge: {with_nodes}")
-    # Graph + Dijkstra wie in der App (vereinfacht)
+        print(f"      {s.split('/')[2]}: HTTP {st}, {len(body)//1024} KB, {dt:.1f}s" + (f", remark: {remark.group(1)[:100]}" if remark else ""))
+        if st == 200 and body.lstrip().startswith("{") and not (remark and "error" in remark.group(1)):
+            return json.loads(body)
+    return None
+def route(data, c):
     idx, pts, adj = {}, [], []
     def node(nid, p):
         if nid not in idx: idx[nid] = len(pts); pts.append(p); adj.append([])
         return idx[nid]
-    for w in ways:
+    for w in data.get("elements", []):
         ids, geom = w.get("nodes"), w.get("geometry")
-        if not ids or not geom or len(ids) != len(geom): continue
+        if w.get("type") != "way" or not ids or not geom or len(ids) != len(geom): continue
         prev = node(ids[0], (geom[0]["lat"], geom[0]["lon"]))
         for k in range(1, len(ids)):
             cur = node(ids[k], (geom[k]["lat"], geom[k]["lon"]))
             if cur != prev:
                 d = km(pts[prev], pts[cur]); adj[prev].append((cur, d)); adj[cur].append((prev, d))
             prev = cur
-    print(f"    Graph: {len(pts)} Knoten")
+    found = 0
     for (i, a), (j, b) in zip(c, c[1:]):
-        segments_total += 1
-        da = [(km(a, p), n) for n, p in enumerate(pts)]; db = [(km(b, p), n) for n, p in enumerate(pts)]
-        if not da: print(f"      {corridor[i]} -> {corridor[j]}: kein Graph"); continue
-        ma, mb = min(da)[0], min(db)[0]
-        if ma > 1.5 or mb > 1.5:
-            print(f"      {corridor[i]} -> {corridor[j]}: Bahnhof zu weit vom Gleis (A {ma:.2f} km, B {mb:.2f} km)"); continue
-        src = {n: d for d, n in da if d <= ma + 0.25}; dst = {n: d for d, n in db if d <= mb + 0.25}
-        dist = {n: d for n, d in src.items()}; heap = [(d, n) for n, d in src.items()]; heapq.heapify(heap)
+        da = sorted((km(a, p), n) for n, p in enumerate(pts)); db = sorted((km(b, p), n) for n, p in enumerate(pts))
+        if not da or da[0][0] > 1.5 or db[0][0] > 1.5:
+            print(f"        {corridor[i]} -> {corridor[j]}: Bahnhof zu weit vom Gleis"); continue
+        src = {n: d for d, n in da if d <= da[0][0] + 0.25}; dst = {n: d for d, n in db if d <= db[0][0] + 0.25}
+        dist = dict(src); heap = [(d, n) for n, d in src.items()]; heapq.heapify(heap)
         best_t, best_d = None, 1e18; straight = km(a, b); limit = straight * 4 + 5
         while heap:
             d, u = heapq.heappop(heap)
@@ -162,13 +152,22 @@ for c in chunks(ordered):
             for v, w_ in adj[u]:
                 nd = d + w_
                 if nd < dist.get(v, 1e18): dist[v] = nd; heapq.heappush(heap, (nd, v))
-        if best_t is None:
-            print(f"      {corridor[i]} -> {corridor[j]}: KEIN WEG im Gleisgraph (Luftlinie {straight:.1f} km)")
+        if best_t is None: print(f"        {corridor[i]} -> {corridor[j]}: KEIN WEG (Luftlinie {straight:.1f} km)")
         else:
-            segments_found += 1
-            print(f"      {corridor[i]} -> {corridor[j]}: Weg {best_d:.1f} km (Luftlinie {straight:.1f} km)")
-    time.sleep(2)
-print(f"  ERGEBNIS OSM: {segments_found} von {segments_total} Abschnitten mit Gleisweg")
+            found += 1; print(f"        {corridor[i]} -> {corridor[j]}: Weg {best_d:.1f} km (Luftlinie {straight:.1f} km)")
+    return found, len(pts)
+for name, mk in VARIANTS.items():
+    print(f"  Variante {name}")
+    total = ok = 0
+    for c in chunks(ordered):
+        bb = bbox(c)
+        print(f"    Stück {corridor[c[0][0]]} .. {corridor[c[-1][0]]}  bbox {bb}")
+        data = fetch(mk(bb)); total += len(c) - 1
+        if not data: print("      -> KEINE DATEN"); continue
+        f, n = route(data, c); ok += f
+        print(f"      Graph {n} Knoten, {f} von {len(c)-1} verbunden")
+        time.sleep(3)
+    print(f"  ERGEBNIS {name}: {ok} von {total} Abschnitten mit Gleisweg\n")
 
 # ---------- 4. DB-Schnittstelle (vendo) ----------
 print("\n[4] DB-Navigator-Schnittstelle")
