@@ -59,9 +59,11 @@ den Zeiten an den Bahnhöfen, in drei Stufen:
    der Geschwindigkeit des Zuges hochgerechnet.
 
 **Gleisverlauf:** Die Positionen liegen auf den echten Gleisen. Die App lädt dafür einmal
-pro Strecke die Gleise aus OpenStreetMap (Overpass API) – in Stücken von etwa 40 km, damit
-die Abfragen auch rund um Großstädte klein bleiben, und bei überlastetem Server über einen
-Ersatzserver. Zwischen je zwei Bahnhöfen sucht sie den kürzesten Weg über das Gleisnetz;
+pro Strecke die Gleise aus OpenStreetMap (Overpass API) – in Stücken von höchstens 60 km,
+jeweils ein Rechteck mit mindestens 10 km Rand (echte Strecken weichen weit von der geraden
+Linie ab, z. B. München → Pfaffenhofen über Dachau), bei überlastetem Server über einen
+Ersatzserver. Der Server braucht pro Stück oft 30–45 Sekunden; fertige Stücke erscheinen
+sofort. Zwischen je zwei Bahnhöfen sucht sie den kürzesten Weg über das Gleisnetz;
 das Ergebnis wird 30 Tage gespeichert. Wo OSM nichts liefert, nimmt sie den Linienverlauf
 aus dem DB-Fahrtverlauf. Die Legende der Karte zeigt, wie viel der Strecke auf Gleisen
 liegt, und ggf. warum Gleise fehlen (z. B. „Server überlastet“).

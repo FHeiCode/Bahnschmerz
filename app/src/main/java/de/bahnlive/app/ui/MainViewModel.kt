@@ -247,7 +247,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         trackJob = viewModelScope.launch {
             guarded("Laden der Gleise") {
                 _board.update { if (it == null || it.route != state.route) it else it.copy(trackStatus = "Gleise werden geladen …") }
-                val outcome = tracks.track(stations)
+                val outcome = tracks.track(stations) { done, total, partial ->
+                    // Fertige Stücke sofort zeigen – das Laden dauert pro Stück bis zu einer Minute.
+                    _board.update {
+                        if (it == null || it.route != state.route || it.corridor != state.corridor) it
+                        else it.copy(
+                            track = if (partial.isEmpty()) it.track else partial,
+                            trackStatus = "Gleise werden geladen … ($done von $total)",
+                        )
+                    }
+                }
                 _board.update {
                     if (it == null || it.route != state.route || it.corridor != state.corridor) it
                     else it.copy(
