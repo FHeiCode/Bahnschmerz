@@ -40,10 +40,10 @@ object RailRouter {
     private const val MAX_DETOUR = 4.0
 
     /**
-     * Teilt die Bahnhöfe in Stücke von etwa [maxKm] Luftlinie (überlappend am Rand), damit jede
+     * Teilt die Bahnhöfe in Stücke von höchstens [maxKm] Luftlinie (überlappend am Rand), damit jede
      * Overpass-Abfrage klein bleibt – rund um Großstädte ist das Gleisnetz sehr dicht.
      */
-    fun <T> chunks(stations: List<Pair<T, LatLon>>, maxKm: Double = 40.0): List<List<Pair<T, LatLon>>> {
+    fun <T> chunks(stations: List<Pair<T, LatLon>>, maxKm: Double = 60.0): List<List<Pair<T, LatLon>>> {
         if (stations.size < 2) return emptyList()
         val result = ArrayList<List<Pair<T, LatLon>>>()
         var start = 0
@@ -134,17 +134,26 @@ object RailRouter {
         return path.all { p -> CorridorGeometry.distanceKm(a, p) + CorridorGeometry.distanceKm(p, b) <= straight + 2 * maxSide }
     }
 
-    /** Overpass-Abfrage für Gleise in der Nähe der Linie durch die Bahnhöfe. */
+    /**
+     * Overpass-Abfrage für alle Gleise (ohne Abstell-, Rangier- und Anschlussgleise) in einem
+     * Rechteck um die Bahnhöfe, mit mindestens 10 km Rand. Ein schmaler Streifen um die gerade
+     * Linie reicht nicht: Die Strecke München → Pfaffenhofen führt über Dachau, 9 km daneben.
+     * Rechteck-Abfragen sind außerdem viel schneller als „around“.
+     */
     fun overpassQuery(stations: List<LatLon>): String {
-        val maxSegmentKm = stations.zipWithNext { a, b -> CorridorGeometry.distanceKm(a, b) }.maxOrNull() ?: 0.0
-        // Puffer um die gerade Verbindungslinie: lange Abschnitte weichen stärker davon ab.
-        val radiusM = (maxSegmentKm * 100).coerceIn(1200.0, 5000.0).toInt()
-        val line = stations.joinToString(",") { "%.5f,%.5f".format(java.util.Locale.ROOT, it.lat, it.lon) }
-        return "[out:json][timeout:25];" +
+        val south = stations.minOf { it.lat }
+        val north = stations.maxOf { it.lat }
+        val west = stations.minOf { it.lon }
+        val east = stations.maxOf { it.lon }
+        val spanKm = CorridorGeometry.distanceKm(LatLon(south, west), LatLon(north, east))
+        val marginKm = maxOf(10.0, spanKm * 0.3)
+        val dLat = marginKm / 110.57
+        val dLon = marginKm / (111.32 * cos(Math.toRadians((south + north) / 2)))
+        val box = "%.4f,%.4f,%.4f,%.4f".format(java.util.Locale.ROOT, south - dLat, west - dLon, north + dLat, east + dLon)
+        return "[out:json][timeout:90];" +
             // Weichenverbindungen (service=crossover) werden gebraucht: Hauptstrecken sind oft je
-            // Richtung ein eigenes Gleis, verbunden nur über Weichen. Abstell-, Rangier- und
-            // Anschlussgleise bleiben draußen.
-            "way[\"railway\"~\"^(rail|light_rail|narrow_gauge)$\"][\"service\"!~\"^(yard|siding|spur)$\"](around:$radiusM,$line);" +
+            // Richtung ein eigenes Gleis, verbunden nur über Weichen.
+            "way[\"railway\"=\"rail\"][\"service\"!~\"^(yard|siding|spur)$\"]($box);" +
             "out skel geom;" // ohne Attribute → deutlich kleinere Antwort
     }
 

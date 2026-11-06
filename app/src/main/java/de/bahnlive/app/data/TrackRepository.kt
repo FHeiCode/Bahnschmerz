@@ -30,15 +30,16 @@ data class TrackOutcome(
 
 /**
  * Lädt Gleisverläufe aus OpenStreetMap (Overpass API) und speichert sie 30 Tage auf dem
- * Gerät. Die Strecke wird in Stücke von etwa 40 km zerlegt, damit jede Abfrage klein
- * bleibt; ist ein Server überlastet, wird der nächste versucht.
+ * Gerät. Die Strecke wird in Stücke von höchstens 60 km zerlegt (Rechteck mit Rand je
+ * Stück); ist ein Server überlastet, wird der nächste versucht.
  * Kartendaten © OpenStreetMap-Mitwirkende (ODbL).
  */
 class TrackRepository(context: Context) {
     private val dir = File(context.filesDir, "tracks").apply { mkdirs() }
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(40, TimeUnit.SECONDS)
+        // Der Overpass-Server braucht für ein Stück oft 30–45 Sekunden.
+        .readTimeout(120, TimeUnit.SECONDS)
         .build()
     private val json = Json { ignoreUnknownKeys = true }
     private val memory = HashMap<String, Map<Int, List<LatLon>>>()
@@ -49,7 +50,11 @@ class TrackRepository(context: Context) {
      * Gleisverlauf für die Bahnhöfe [stations] (Korridor-Index, Koordinate) in Fahrtreihenfolge.
      * Stücke, die nicht geladen werden konnten, fehlen – dort zeichnet die Karte gerade Linien.
      */
-    suspend fun track(stations: List<Pair<Int, LatLon>>): TrackOutcome = mutex.withLock {
+    suspend fun track(
+        stations: List<Pair<Int, LatLon>>,
+        /** Zwischenstand nach jedem geladenen Stück (fertig, gesamt, bisherige Abschnitte). */
+        onProgress: (Int, Int, Map<Int, List<LatLon>>) -> Unit = { _, _, _ -> },
+    ): TrackOutcome = mutex.withLock {
         if (stations.size < 2) return@withLock TrackOutcome(emptyMap(), null)
         val key = key(stations)
         memory[key]?.let { return@withLock TrackOutcome(it, null) }
@@ -59,7 +64,9 @@ class TrackRepository(context: Context) {
 
         val segments = HashMap<Int, List<LatLon>>()
         var problem: String? = null
-        for (chunk in RailRouter.chunks(stations)) {
+        val parts = RailRouter.chunks(stations)
+        for ((n, chunk) in parts.withIndex()) {
+            onProgress(n, parts.size, HashMap(segments))
             try {
                 val body = fetch(RailRouter.overpassQuery(chunk.map { it.second }))
                 segments += withContext(Dispatchers.Default) {
@@ -114,8 +121,8 @@ class TrackRepository(context: Context) {
     }
 
     private fun key(stations: List<Pair<Int, LatLon>>): String {
-        // "v4": seit 1.5.4 mit Plausibilitätsprüfung – ältere, evtl. fehlerhafte Einträge verwerfen.
-        val text = "v4|" + stations.joinToString(";") { (i, p) -> "%d:%.4f,%.4f".format(java.util.Locale.ROOT, i, p.lat, p.lon) }
+        // "v5": seit 1.5.5 Rechteck-Abfragen – ältere, meist lückenhafte Einträge verwerfen.
+        val text = "v5|" + stations.joinToString(";") { (i, p) -> "%d:%.4f,%.4f".format(java.util.Locale.ROOT, i, p.lat, p.lon) }
         return MessageDigest.getInstance("SHA-1").digest(text.toByteArray())
             .joinToString("") { "%02x".format(it) }
     }
