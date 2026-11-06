@@ -91,7 +91,7 @@ for (i, a), (j, b) in zip(ordered, ordered[1:]):
 
 # ---------- 3. Overpass: Varianten mit Rechteck statt Schlauch ----------
 print("\n[3] Overpass-Varianten (Rechteck je Stück)")
-def chunks(stations, max_km=60.0):
+def chunks(stations, max_km=60.0):  # wie RailRouter.chunks
     out, start = [], 0
     while start < len(stations) - 1:
         end = start + 1; d = km(stations[start][1], stations[end][1])
@@ -109,7 +109,6 @@ def bbox(st):
     return f"{min(lats)-dlat:.4f},{min(lons)-dlon:.4f},{max(lats)+dlat:.4f},{max(lons)+dlon:.4f}"
 VARIANTS = {
     "A alle Gleise ohne Abstell": lambda bb: f'[out:json][timeout:90];way["railway"="rail"]["service"!~"^(yard|siding|spur)$"]({bb});out skel geom;',
-    "B main/branch + Weichen": lambda bb: f'[out:json][timeout:90];(way["railway"="rail"]["usage"~"^(main|branch)$"]({bb});way["railway"="rail"]["service"="crossover"]({bb}););out skel geom;',
 }
 SERVERS = ["https://overpass-api.de/api/interpreter", "https://overpass.private.coffee/api/interpreter",
            "https://overpass.kumi.systems/api/interpreter"]
@@ -163,12 +162,17 @@ for name, mk in VARIANTS.items():
         bb = bbox(c)
         print(f"    Stück {corridor[c[0][0]]} .. {corridor[c[-1][0]]}  bbox {bb}")
         data = fetch(mk(bb)); total += len(c) - 1
+        import os; os.makedirs("out", exist_ok=True)
+        if data:
+            json.dump(data, open(f"out/chunk_{c[0][0]}.json", "w"))
         if not data: print("      -> KEINE DATEN"); continue
         f, n = route(data, c); ok += f
         print(f"      Graph {n} Knoten, {f} von {len(c)-1} verbunden")
         time.sleep(3)
     print(f"  ERGEBNIS {name}: {ok} von {total} Abschnitten mit Gleisweg\n")
 
+json.dump({"corridor": corridor, "stations": [[i, p[0], p[1]] for i, p in ordered]}, open("out/stations.json", "w"), ensure_ascii=False)
+sys.exit(0)
 # ---------- 4. DB-Schnittstelle (vendo) ----------
 print("\n[4] DB-Navigator-Schnittstelle")
 BASE = "https://app.services-bahn.de/mob/"
