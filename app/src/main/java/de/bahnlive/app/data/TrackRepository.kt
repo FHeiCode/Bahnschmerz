@@ -80,7 +80,7 @@ class TrackRepository(context: Context) {
                 problem = "Antwort zu groß"
             } catch (e: Throwable) {
                 // Jeder andere Fehler (z. B. kaputte Antwort) darf die App nicht beenden.
-                problem = "Fehler beim Auswerten (${e.javaClass.simpleName})"
+                problem = "Fehler beim Auswerten (${e.javaClass.simpleName}: ${e.message?.take(80) ?: "-"})"
             }
         }
         val outcome = TrackOutcome(segments, problem ?: if (segments.isEmpty()) "kein Gleisweg gefunden" else null)
@@ -100,7 +100,8 @@ class TrackRepository(context: Context) {
             try {
                 val request = Request.Builder()
                     .url(server)
-                    .header("User-Agent", "BahnSchmerz-Android (Gleisverlauf für Zugkarte)")
+                    // Nur ASCII: OkHttp lehnt Umlaute in Kopfzeilen mit IllegalArgumentException ab.
+                    .header("User-Agent", "BahnSchmerz-Android (Gleisverlauf fuer Zugkarte)")
                     .post(FormBody.Builder().add("data", query).build())
                     .build()
                 client.newCall(request).execute().use { r ->

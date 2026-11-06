@@ -18,6 +18,14 @@ jobs:
       - name: Code holen
         uses: actions/checkout@v4
 
+      - name: Prüfen, dass HTTP-Kopfzeilen nur ASCII enthalten
+        # OkHttp wirft bei Umlauten in Kopfzeilen eine IllegalArgumentException (Fehler in 1.5.0–1.5.5).
+        run: |
+          if grep -rnP '\.header\([^)]*[^\x00-\x7F]' app/src/main/java; then
+            echo "::error::Nicht-ASCII-Zeichen in einer HTTP-Kopfzeile gefunden (siehe oben)."
+            exit 1
+          fi
+
       - name: Java 17 einrichten
         uses: actions/setup-java@v4
         with:
