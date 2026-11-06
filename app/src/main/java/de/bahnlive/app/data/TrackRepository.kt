@@ -114,8 +114,8 @@ class TrackRepository(context: Context) {
     }
 
     private fun key(stations: List<Pair<Int, LatLon>>): String {
-        // "v3": Format seit 1.5.2 (Stückweise, nur Gleispunkte) – alte Einträge verwerfen.
-        val text = "v3|" + stations.joinToString(";") { (i, p) -> "%d:%.4f,%.4f".format(java.util.Locale.ROOT, i, p.lat, p.lon) }
+        // "v4": seit 1.5.4 mit Plausibilitätsprüfung – ältere, evtl. fehlerhafte Einträge verwerfen.
+        val text = "v4|" + stations.joinToString(";") { (i, p) -> "%d:%.4f,%.4f".format(java.util.Locale.ROOT, i, p.lat, p.lon) }
         return MessageDigest.getInstance("SHA-1").digest(text.toByteArray())
             .joinToString("") { "%02x".format(it) }
     }

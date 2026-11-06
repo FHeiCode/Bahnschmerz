@@ -32,13 +32,17 @@ class StationLocator(context: Context) {
 
     /** Sofort verfügbare Koordinaten (ohne Netz), sonst null. */
     fun cached(name: String): LatLon? {
-        Stations.coordinatesOf(name)?.let { return it }
-        val raw = prefs.getString(key(name), null) ?: return null
-        return decode(raw)
+        prefs.getString(key(name), null)?.let { decode(it) }?.let { return it }
+        return Stations.coordinatesOf(name)
     }
 
     /** True, wenn der Bahnhof schon gesucht und nicht gefunden wurde. */
     fun knownMissing(name: String): Boolean = prefs.getString(key(name), null) == MISSING
+
+    /** Speichert genaue Koordinaten (z. B. aus dem DB-Fahrtverlauf) – sie haben Vorrang. */
+    fun store(name: String, position: LatLon) {
+        prefs.edit().putString(key(name), "${position.lat},${position.lon}").apply()
+    }
 
     suspend fun locate(name: String): LatLon? {
         cached(name)?.let { return it }

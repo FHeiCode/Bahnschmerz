@@ -34,6 +34,8 @@ class CorridorGeometry private constructor(
     private val stationKm: DoubleArray,
     /** Anteil der Abschnitte, die echten Gleisen folgen (0..1). */
     val trackShare: Double,
+    /** Bahnhöfe (Korridor-Index), deren Koordinaten verwendet wurden (ohne Ausreißer). */
+    val usedStations: Set<Int> = emptySet(),
 ) {
     /** Kilometer ab Start für Bahnhof [index]. */
     fun km(index: Int): Double = stationKm[index.coerceIn(0, stationKm.lastIndex)]
@@ -70,9 +72,10 @@ class CorridorGeometry private constructor(
             fallback: Map<Int, List<LatLon>> = emptyMap(),
         ): CorridorGeometry? {
             if (corridor.size < 2) return null
-            val raw = corridor.map(coords)
+            val raw = corridor.map(coords).toMutableList()
             // Start und Ziel braucht es mindestens, sonst ist die Lage unklar.
             if (raw.first() == null || raw.last() == null) return null
+            dropOutliers(raw)
             val known = raw.indices.filter { raw[it] != null }
 
             val points = ArrayList<LatLon>()
@@ -105,7 +108,32 @@ class CorridorGeometry private constructor(
                 for (i in a + 1 until b) stationKm[i] = startKm + (endKm - startKm) * (i - a) / (b - a)
             }
             val share = if (known.size > 1) onTrack.toDouble() / (known.size - 1) else 0.0
-            return CorridorGeometry(points, cumulative, stationKm, share)
+            return CorridorGeometry(points, cumulative, stationKm, share, known.toSet())
+        }
+
+        /**
+         * Entfernt Zwischenhalte, deren Koordinaten offensichtlich falsch sind (z. B. ein
+         * gleichnamiger Ort woanders): Der Umweg über sie ist viel länger als die direkte
+         * Verbindung ihrer Nachbarn. Sie werden dann zwischen den Nachbarn eingereiht.
+         */
+        private fun dropOutliers(raw: MutableList<LatLon?>) {
+            var changed = true
+            while (changed) {
+                changed = false
+                val known = raw.indices.filter { raw[it] != null }
+                var worst = -1
+                var worstRatio = 0.0
+                for (k in 1 until known.lastIndex) {
+                    val p = raw[known[k - 1]]!!
+                    val c = raw[known[k]]!!
+                    val n = raw[known[k + 1]]!!
+                    val direct = distanceKm(p, n)
+                    val via = distanceKm(p, c) + distanceKm(c, n)
+                    val ratio = (via - direct) / (direct + 3.0)
+                    if (via > direct * 2.5 + 8.0 && ratio > worstRatio) { worst = known[k]; worstRatio = ratio }
+                }
+                if (worst >= 0) { raw[worst] = null; changed = true }
+            }
         }
 
         fun distanceKm(a: LatLon, b: LatLon): Double {

@@ -68,36 +68,70 @@ object RailRouter {
      */
     fun segmentsFromPolylines(polylines: List<List<LatLon>>, stations: List<Pair<Int, LatLon>>): Map<Int, List<LatLon>> {
         val result = HashMap<Int, List<LatLon>>()
+        if (polylines.isEmpty()) return result
+        // Kilometerstand entlang jeder Linie, um Stücke schnell zu messen.
+        val cumulative = polylines.map { poly ->
+            DoubleArray(poly.size).also { c -> for (i in 1 until poly.size) c[i] = c[i - 1] + CorridorGeometry.distanceKm(poly[i - 1], poly[i]) }
+        }
         for (k in 0 until stations.size - 1) {
             val a = stations[k].second
             val b = stations[k + 1].second
-            val straight = CorridorGeometry.distanceKm(a, b)
-            for (poly in polylines) {
-                val ia = nearestIndex(poly, a) ?: continue
-                val ib = nearestIndex(poly, b) ?: continue
-                if (ia == ib) continue
-                val part = if (ia < ib) poly.subList(ia, ib + 1) else poly.subList(ib, ia + 1).reversed()
-                val length = part.zipWithNext { x, y -> CorridorGeometry.distanceKm(x, y) }.sum()
-                if (length > straight * MAX_DETOUR + 5) continue
-                result[stations[k].first] = thin(part)
-                break
+            var best: List<LatLon>? = null
+            var bestLength = Double.MAX_VALUE
+            polylines.forEachIndexed { n, poly ->
+                // Alle Stellen, an denen die Linie nah an A bzw. B vorbeiführt (es können mehrere sein).
+                val nearA = closeIndices(poly, a)
+                val nearB = closeIndices(poly, b)
+                for (ia in nearA) for (ib in nearB) {
+                    if (ia == ib) continue
+                    val length = kotlin.math.abs(cumulative[n][ib] - cumulative[n][ia])
+                    if (length >= bestLength) continue
+                    val part = if (ia < ib) poly.subList(ia, ib + 1) else poly.subList(ib, ia + 1).reversed()
+                    if (!plausible(part, a, b)) continue
+                    best = part
+                    bestLength = length
+                }
             }
+            best?.let { result[stations[k].first] = thin(it) }
         }
         return result
     }
 
-    private fun nearestIndex(poly: List<LatLon>, p: LatLon): Int? {
-        // Schnelle Näherung (flache Erde) – genau genug für wenige Kilometer.
+    /**
+     * Indizes der Linienpunkte nahe [p]: pro Vorbeifahrt nur der nächste Punkt
+     * (eine Linie kann mehrfach an einem Bahnhof vorbeiführen).
+     */
+    private fun closeIndices(poly: List<LatLon>, p: LatLon): List<Int> {
         val kx = cos(Math.toRadians(p.lat)) * 111.32
-        var best = -1
-        var bestD = Double.MAX_VALUE
+        val result = ArrayList<Int>()
+        var runBest = -1
+        var runBestD = Double.MAX_VALUE
         poly.forEachIndexed { i, q ->
             val dx = (q.lon - p.lon) * kx
             val dy = (q.lat - p.lat) * 110.57
-            val d = dx * dx + dy * dy
-            if (d < bestD) { bestD = d; best = i }
+            val d = kotlin.math.sqrt(dx * dx + dy * dy)
+            if (d <= MAX_SNAP_KM) {
+                if (d < runBestD) { runBestD = d; runBest = i }
+            } else if (runBest >= 0) {
+                result.add(runBest); runBest = -1; runBestD = Double.MAX_VALUE
+            }
         }
-        return best.takeIf { it >= 0 && bestD <= MAX_SNAP_KM * MAX_SNAP_KM }
+        if (runBest >= 0) result.add(runBest)
+        return result
+    }
+
+    /**
+     * Ist ein Gleisstück zwischen A und B glaubwürdig? Nicht viel länger als die Luftlinie
+     * und seitlich nicht zu weit davon entfernt. Echte Bögen gibt es (Flughafen München →
+     * Freising: 18 km Gleis bei 5 km Luftlinie), Sprünge quer übers Land aber nicht.
+     */
+    fun plausible(path: List<LatLon>, a: LatLon, b: LatLon): Boolean {
+        if (path.size < 2) return false
+        val straight = CorridorGeometry.distanceKm(a, b)
+        val length = path.zipWithNext { x, y -> CorridorGeometry.distanceKm(x, y) }.sum()
+        if (length > straight * MAX_DETOUR + 5) return false
+        val maxSide = maxOf(8.0, straight * 0.8)
+        return path.all { p -> CorridorGeometry.distanceKm(a, p) + CorridorGeometry.distanceKm(p, b) <= straight + 2 * maxSide }
     }
 
     /** Overpass-Abfrage für Gleise in der Nähe der Linie durch die Bahnhöfe. */
@@ -175,7 +209,9 @@ object RailRouter {
             // Umwege über Nebenstrecken oder falsche Gleise erkennen.
             if (length > straight * MAX_DETOUR + 5) continue
             // Nur Punkte auf dem Gleis – keine Bahnhofskoordinate, die neben dem Gleis liegen kann.
-            result[stations[k].first] = thin(path.map { graph.point(it) })
+            val points = path.map { graph.point(it) }
+            if (!plausible(points, stations[k].second, stations[k + 1].second)) continue
+            result[stations[k].first] = thin(points)
         }
         return result
     }

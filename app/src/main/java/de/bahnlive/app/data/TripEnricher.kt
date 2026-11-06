@@ -58,7 +58,7 @@ class TripEnricher(private val source: TripSource) {
             }
             apply(t, trip, corridor, now) ?: t
         }
-        Result(result, coordinates, trips.values.mapNotNull { it?.polyline?.takeIf { p -> p.size >= 2 } })
+        Result(result, coordinates, trips.values.flatMap { it?.polylines.orEmpty() })
     }
 
     private suspend fun <T> safe(block: suspend () -> T): T? =
