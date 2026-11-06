@@ -35,8 +35,11 @@ data class VendoTrip(
     val name: String?,
     val trainNumber: String?,
     val stops: List<VendoStop>,
-    /** Linienverlauf des Zuges (Gleisgeometrie der DB), leer wenn nicht geliefert. */
-    val polyline: List<LatLon> = emptyList(),
+    /**
+     * Linienverlauf des Zuges (Gleisgeometrie der DB) als zusammenhängende Stücke.
+     * An Lücken getrennt, damit keine Linie quer über die Karte entsteht.
+     */
+    val polylines: List<List<LatLon>> = emptyList(),
 )
 
 /**
@@ -98,21 +101,32 @@ object VendoParser {
             name = root.text("mitteltext") ?: root.text("langtext"),
             trainNumber = root.text("verkehrsmittelNummer"),
             stops = stops,
-            polyline = polyline(root),
+            polylines = polylines(root),
         )
     }
 
-    /** polylineGroup.polylineDesc[].coordinates[{latitude, longitude}] */
-    private fun polyline(root: JsonObject): List<LatLon> {
+    /** polylineGroup.polylineDesc[].coordinates[{latitude, longitude}], an Sprüngen > 25 km getrennt (gerade Abschnitte haben Punkte bis ~6 km auseinander). */
+    private fun polylines(root: JsonObject): List<List<LatLon>> {
         val desc = ((root["polylineGroup"] as? JsonObject)?.get("polylineDesc") as? JsonArray) ?: return emptyList()
-        return desc.flatMap { d ->
-            ((d as? JsonObject)?.get("coordinates") as? JsonArray).orEmpty().mapNotNull { c ->
+        val pieces = ArrayList<List<LatLon>>()
+        for (d in desc) {
+            val points = ((d as? JsonObject)?.get("coordinates") as? JsonArray).orEmpty().mapNotNull { c ->
                 val o = c as? JsonObject ?: return@mapNotNull null
                 val lat = (o["latitude"] as? JsonPrimitive)?.doubleOrNull
                 val lon = (o["longitude"] as? JsonPrimitive)?.doubleOrNull
                 if (lat != null && lon != null) LatLon(lat, lon) else null
             }
+            var current = ArrayList<LatLon>()
+            for (p in points) {
+                if (current.isNotEmpty() && CorridorGeometry.distanceKm(current.last(), p) > 25.0) {
+                    if (current.size >= 2) pieces.add(current)
+                    current = ArrayList()
+                }
+                current.add(p)
+            }
+            if (current.size >= 2) pieces.add(current)
         }
+        return pieces
     }
 
     private fun time(text: String?, zone: ZoneId): LocalDateTime? = text?.let {

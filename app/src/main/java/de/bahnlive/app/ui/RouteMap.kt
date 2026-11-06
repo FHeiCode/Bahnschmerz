@@ -231,6 +231,8 @@ private fun render(map: MapView, state: BoardState, geometry: CorridorGeometry?,
     // Bahnhöfe mit bekannten Koordinaten
     state.corridor.forEachIndexed { i, name ->
         val p = state.coordinates[name] ?: return@forEachIndexed
+        // Bahnhöfe mit offensichtlich falschen Koordinaten nicht zeichnen.
+        if (geometry != null && i !in geometry.usedStations) return@forEachIndexed
         val isEnd = i == 0 || i == state.corridor.lastIndex
         map.overlays.add(Marker(map).apply {
             position = GeoPoint(p.lat, p.lon)

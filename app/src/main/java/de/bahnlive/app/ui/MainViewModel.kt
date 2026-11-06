@@ -178,6 +178,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         dbUnavailable: Boolean,
         shapes: List<List<LatLon>> = emptyList(),
     ) {
+        // Für später merken, damit auch die erste Anzeige stimmt.
+        coords.forEach { (name, p) -> locator.store(name, p) }
         _board.update { current ->
             if (current == null || current.route != route) return@update current
             current.copy(
@@ -185,8 +187,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 connections = result.connections,
                 moving = moving,
                 corridor = result.corridor,
-                // Koordinaten aus dem Fahrtverlauf nur ergänzen, nicht ersetzen.
-                coordinates = coords + current.coordinates,
+                // Koordinaten aus dem DB-Fahrtverlauf sind genauer als die Namenssuche → Vorrang.
+                coordinates = current.coordinates + coords,
                 dbTripsUnavailable = dbUnavailable,
                 // Neue Linienverläufe zuerst, ältere behalten (höchstens 20).
                 dbShapes = if (shapes.isEmpty()) current.dbShapes else (shapes + current.dbShapes).take(20),
