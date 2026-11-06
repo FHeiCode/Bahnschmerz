@@ -31,7 +31,13 @@ data class VendoStop(
 )
 
 /** Kompletter Fahrtverlauf eines Zuges. */
-data class VendoTrip(val name: String?, val trainNumber: String?, val stops: List<VendoStop>)
+data class VendoTrip(
+    val name: String?,
+    val trainNumber: String?,
+    val stops: List<VendoStop>,
+    /** Linienverlauf des Zuges (Gleisgeometrie der DB), leer wenn nicht geliefert. */
+    val polyline: List<LatLon> = emptyList(),
+)
 
 /**
  * Liest die Antworten der DB-Navigator-Schnittstelle. Das Format ist nicht offiziell
@@ -92,7 +98,21 @@ object VendoParser {
             name = root.text("mitteltext") ?: root.text("langtext"),
             trainNumber = root.text("verkehrsmittelNummer"),
             stops = stops,
+            polyline = polyline(root),
         )
+    }
+
+    /** polylineGroup.polylineDesc[].coordinates[{latitude, longitude}] */
+    private fun polyline(root: JsonObject): List<LatLon> {
+        val desc = ((root["polylineGroup"] as? JsonObject)?.get("polylineDesc") as? JsonArray) ?: return emptyList()
+        return desc.flatMap { d ->
+            ((d as? JsonObject)?.get("coordinates") as? JsonArray).orEmpty().mapNotNull { c ->
+                val o = c as? JsonObject ?: return@mapNotNull null
+                val lat = (o["latitude"] as? JsonPrimitive)?.doubleOrNull
+                val lon = (o["longitude"] as? JsonPrimitive)?.doubleOrNull
+                if (lat != null && lon != null) LatLon(lat, lon) else null
+            }
+        }
     }
 
     private fun time(text: String?, zone: ZoneId): LocalDateTime? = text?.let {

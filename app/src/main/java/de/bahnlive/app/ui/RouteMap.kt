@@ -40,6 +40,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import de.bahnlive.app.data.CorridorGeometry
 import de.bahnlive.app.data.DelayLevel
 import de.bahnlive.app.data.PositionEstimator
+import de.bahnlive.app.data.RailRouter
 import de.bahnlive.app.data.TrainStatus
 import kotlinx.coroutines.delay
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
@@ -70,8 +71,11 @@ fun rememberStationMapData(state: BoardState): StationMapData {
             now = LocalDateTime.now()
         }
     }
-    val geometry = remember(state.corridor, state.coordinates, state.track) {
-        CorridorGeometry.build(state.corridor, { state.coordinates[it] }, state.track)
+    val geometry = remember(state.corridor, state.coordinates, state.track, state.dbShapes) {
+        // Gleise aus OSM; wo die fehlen, der Linienverlauf aus dem DB-Fahrtverlauf.
+        val stations = state.corridor.mapIndexedNotNull { i, n -> state.coordinates[n]?.let { i to it } }
+        val fromDb = RailRouter.segmentsFromPolylines(state.dbShapes, stations)
+        CorridorGeometry.build(state.corridor, { state.coordinates[it] }, state.track, fromDb)
     }
     val statuses = remember(state.moving, geometry, now) {
         state.moving.mapNotNull { PositionEstimator.status(it, geometry, now) }
@@ -150,12 +154,12 @@ fun RouteMap(state: BoardState, data: StationMapData, modifier: Modifier = Modif
             }
         }
 
-        Legend(positions, data.geometry?.trackShare ?: 0.0, Modifier.align(Alignment.BottomStart).padding(start = 8.dp, bottom = 24.dp))
+        Legend(positions, data.geometry?.trackShare ?: 0.0, state.trackStatus, Modifier.align(Alignment.BottomStart).padding(start = 8.dp, bottom = 24.dp))
     }
 }
 
 @Composable
-private fun Legend(positions: List<TrainStatus>, trackShare: Double, modifier: Modifier) {
+private fun Legend(positions: List<TrainStatus>, trackShare: Double, trackStatus: String?, modifier: Modifier) {
     val counts = positions.groupingBy { it.level() }.eachCount()
     Surface(
         shape = RoundedCornerShape(8.dp),
@@ -185,6 +189,14 @@ private fun Legend(positions: List<TrainStatus>, trackShare: Double, modifier: M
                     "Auf Gleisen: ${(trackShare * 100).toInt()} % · © OpenStreetMap",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            trackStatus?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (it.contains("geladen")) MaterialTheme.colorScheme.onSurfaceVariant
+                    else MaterialTheme.colorScheme.error,
                 )
             }
         }
