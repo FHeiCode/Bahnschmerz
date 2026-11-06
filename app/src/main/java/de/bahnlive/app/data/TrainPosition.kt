@@ -81,19 +81,24 @@ class CorridorGeometry private constructor(
             }
             val stationKm = DoubleArray(corridor.size)
             var onTrack = 0
-            add(raw[known.first()]!!)
             for (k in 0 until known.lastIndex) {
                 val a = known[k]
                 val b = known[k + 1]
                 val pa = raw[a]!!
                 val pb = raw[b]!!
+                // Gleisabschnitt nur nehmen, wenn er wirklich zwischen diesen beiden Bahnhöfen liegt.
                 val seg = track[a]?.takeIf {
                     it.size >= 2 && distanceKm(it.first(), pa) < 2.0 && distanceKm(it.last(), pb) < 2.0
                 }
                 if (seg != null) onTrack++
-                val startKm = cumulative.last()
-                (seg ?: listOf(pa, pb)).drop(1).forEach(::add)
+                val line = seg ?: listOf(pa, pb)
+                // Der Abschnitt beginnt am Gleis beim Bahnhof (nicht an der Bahnhofskoordinate,
+                // die oft neben dem Gleis liegt). Kleine Sprünge zwischen Abschnitten entstehen,
+                // wenn der nächste Abschnitt am anderen Richtungsgleis beginnt.
+                val startKm = if (points.isEmpty()) 0.0 else cumulative.last()
+                line.forEach(::add)
                 val endKm = cumulative.last()
+                if (k == 0) stationKm[a] = 0.0
                 stationKm[b] = endKm
                 for (i in a + 1 until b) stationKm[i] = startKm + (endKm - startKm) * (i - a) / (b - a)
             }

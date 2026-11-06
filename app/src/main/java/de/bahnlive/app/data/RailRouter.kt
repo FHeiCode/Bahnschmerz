@@ -40,7 +40,10 @@ object RailRouter {
         val radiusM = (maxSegmentKm * 120).coerceIn(1500.0, 8000.0).toInt()
         val line = stations.joinToString(",") { "%.5f,%.5f".format(java.util.Locale.ROOT, it.lat, it.lon) }
         return "[out:json][timeout:60];" +
-            "way[\"railway\"~\"^(rail|light_rail|narrow_gauge)$\"][\"service\"!~\".\"](around:$radiusM,$line);" +
+            // Weichenverbindungen (service=crossover) werden gebraucht: Hauptstrecken sind oft je
+            // Richtung ein eigenes Gleis, verbunden nur über Weichen. Abstell-, Rangier- und
+            // Anschlussgleise bleiben draußen.
+            "way[\"railway\"~\"^(rail|light_rail|narrow_gauge)$\"][\"service\"!~\"^(yard|siding|spur)$\"](around:$radiusM,$line);" +
             "out geom;"
     }
 
@@ -93,48 +96,61 @@ object RailRouter {
      */
     fun segments(graph: RailGraph, stations: List<Pair<Int, LatLon>>): Map<Int, List<LatLon>> {
         if (graph.size == 0) return emptyMap()
-        val snapped = stations.map { (_, p) -> nearest(graph, p) }
+        val snapped = stations.map { (_, p) -> candidates(graph, p) }
         val result = HashMap<Int, List<LatLon>>()
         for (k in 0 until stations.size - 1) {
             val from = snapped[k] ?: continue
             val to = snapped[k + 1] ?: continue
-            val a = stations[k].second
-            val b = stations[k + 1].second
-            val straight = CorridorGeometry.distanceKm(a, b)
+            val straight = CorridorGeometry.distanceKm(stations[k].second, stations[k + 1].second)
             val path = shortestPath(graph, from, to, maxKm = straight * 3 + 5) ?: continue
+            if (path.size < 2) continue
             val length = path.zipWithNext { x, y -> CorridorGeometry.distanceKm(graph.point(x), graph.point(y)) }.sum()
             // Umwege über Nebenstrecken oder falsche Gleise erkennen.
             if (length > straight * 2.5 + 3) continue
-            result[stations[k].first] = thin(listOf(a) + path.map { graph.point(it) } + b)
+            // Nur Punkte auf dem Gleis – keine Bahnhofskoordinate, die neben dem Gleis liegen kann.
+            result[stations[k].first] = thin(path.map { graph.point(it) })
         }
         return result
     }
 
-    private fun nearest(graph: RailGraph, p: LatLon): Int? {
+    /**
+     * Gleisknoten in der Nähe eines Bahnhofs: der nächste und alle bis 250 m weiter entfernten
+     * (z. B. die Gleise beider Fahrtrichtungen). Wert = Abstand zum Bahnhof in km.
+     */
+    private fun candidates(graph: RailGraph, p: LatLon): Map<Int, Double>? {
         val kx = cos(Math.toRadians(p.lat)) * 111.32
-        var best = -1
-        var bestD = Double.MAX_VALUE
-        for (i in 0 until graph.size) {
+        val dist = DoubleArray(graph.size) { i ->
             val dx = (graph.lon[i] - p.lon) * kx
             val dy = (graph.lat[i] - p.lat) * 110.57
-            val d = dx * dx + dy * dy
-            if (d < bestD) { bestD = d; best = i }
+            kotlin.math.sqrt(dx * dx + dy * dy)
         }
-        return best.takeIf { it >= 0 && bestD <= MAX_SNAP_KM * MAX_SNAP_KM }
+        val best = dist.minOrNull() ?: return null
+        if (best > MAX_SNAP_KM) return null
+        return dist.indices.filter { dist[it] <= best + 0.25 }
+            .sortedBy { dist[it] }
+            .take(60)
+            .associateWith { dist[it] }
     }
 
-    private fun shortestPath(graph: RailGraph, from: Int, to: Int, maxKm: Double): List<Int>? {
-        if (from == to) return listOf(from)
+    /**
+     * Kürzester Weg von einem der Startknoten zu einem der Zielknoten. Der Abstand der Knoten
+     * zum Bahnhof zählt mit, damit der Weg möglichst nah am Bahnhof beginnt und endet.
+     */
+    private fun shortestPath(graph: RailGraph, from: Map<Int, Double>, to: Map<Int, Double>, maxKm: Double): List<Int>? {
         val dist = DoubleArray(graph.size) { Double.MAX_VALUE }
         val prev = IntArray(graph.size) { -1 }
         val queue = PriorityQueue<Pair<Double, Int>>(compareBy { it.first })
-        dist[from] = 0.0
-        queue.add(0.0 to from)
+        for ((node, d) in from) {
+            dist[node] = d
+            queue.add(d to node)
+        }
+        var bestTarget = -1
+        var bestTotal = Double.MAX_VALUE
         while (queue.isNotEmpty()) {
             val (d, u) = queue.poll()
             if (d > dist[u]) continue
-            if (u == to) break
-            if (d > maxKm) return null
+            if (d >= bestTotal || d > maxKm) break
+            to[u]?.let { extra -> if (d + extra < bestTotal) { bestTotal = d + extra; bestTarget = u } }
             val ns = graph.neighbors[u]
             val ls = graph.lengths[u]
             for (k in ns.indices) {
@@ -146,11 +162,11 @@ object RailRouter {
                 }
             }
         }
-        if (prev[to] < 0) return null
+        if (bestTarget < 0) return null
         val path = ArrayList<Int>()
-        var cur = to
-        while (cur >= 0) { path.add(cur); if (cur == from) break; cur = prev[cur] }
-        return if (path.last() == from) path.reversed() else null
+        var cur = bestTarget
+        while (cur >= 0) { path.add(cur); cur = prev[cur] }
+        return path.reversed()
     }
 
     /** Entfernt Punkte, die näher als 30 m am vorigen liegen (weniger zu zeichnen und zu rechnen). */
