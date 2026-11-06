@@ -43,20 +43,27 @@ Zeiten an den Bahnhöfen, wo er gerade ist.
 
 ## Wie die Zugpositionen entstehen
 
-Die DB-Echtzeitdaten enthalten **keine GPS-Positionen**. Die App schätzt die Position:
-Zwischen zwei Bahnhöfen, für die Echtzeit-Zeiten bekannt sind, wird gleichmäßig
-interpoliert (Haltezeiten an diesen Bahnhöfen werden berücksichtigt). Fehlt eine Zeit – etwa
-weil ein Fernzug an keinem abgefragten Zwischenbahnhof hält –, rechnet die App mit der
-Geschwindigkeit des Zuges hoch (aus seinen bekannten Zeiten, sonst ein typischer Wert der
-Zuggattung). Die Züge bewegen sich alle 10 Sekunden weiter; die Daten werden jede Minute
-neu geladen. Die Position kann einige Kilometer abweichen.
+Die DB-Echtzeitdaten enthalten **keine GPS-Positionen**. Die App schätzt die Position aus
+den Zeiten an den Bahnhöfen, in drei Stufen:
 
-Bahnhofskoordinaten: Für ~70 große Bahnhöfe sind sie in der App enthalten. Alle anderen
-werden einmalig bei OpenStreetMap (Nominatim, max. 1 Anfrage/Sekunde) gesucht und
-auf dem Gerät gespeichert. Beim ersten Öffnen einer neuen Strecke erscheinen
-Zwischenhalte deshalb nach und nach.
+1. **DB-Fahrtverlauf** (Einstellung „Genauere Zugpositionen“, Standard: an): Für die Züge
+   auf der Strecke holt die App den kompletten Fahrtverlauf aus der Schnittstelle der
+   DB-Navigator-App – mit Echtzeit an *jedem* Halt. Die Zuglauf-IDs kommen aus den
+   Ankunftstafeln von Start und Ziel. Diese Schnittstelle ist **nicht offiziell freigegeben**
+   und kann sich ändern; die App fragt sparsam (höchstens 20 Anfragen/Minute, Zwischenspeicher,
+   nach Fehlern 10 Minuten Pause).
+2. **Rückfall:** Ist sie nicht erreichbar oder fehlt ein Zug dort, gilt die bisherige Schätzung
+   aus den Abfahrtstafeln (Start, Ziel, bis zu vier Zwischenbahnhöfe). Die Statuszeile zeigt,
+   für wie viele Züge der Fahrtverlauf genutzt wird.
+3. Zwischen zwei bekannten Zeiten wird gleichmäßig interpoliert, fehlende Zeiten werden mit
+   der Geschwindigkeit des Zuges hochgerechnet.
 
-Kartenmaterial: © OpenStreetMap-Mitwirkende (über osmdroid).
+**Gleisverlauf:** Die Positionen liegen auf den echten Gleisen. Die App lädt dafür einmal
+pro Strecke die Gleise aus OpenStreetMap (Overpass API) und sucht zwischen je zwei
+Bahnhöfen den kürzesten Weg über das Gleisnetz. Das Ergebnis wird 30 Tage auf dem Gerät
+gespeichert. Wo kein plausibler Gleisweg gefunden wird, bleibt es bei einer geraden Linie.
+
+Die Züge bewegen sich alle 10 Sekunden weiter; die Daten werden jede Minute neu geladen.
 
 ## Datenquelle
 
@@ -103,7 +110,13 @@ app/src/main/java/de/bahnlive/app/
 │   ├── RouteStore.kt        Lieblingsstrecken (DataStore)
 │   ├── Stations.kt          Große Bahnhöfe mit Koordinaten
 │   ├── StationLocator.kt    Koordinatensuche (OSM Nominatim) + Cache
-│   ├── TrainPosition.kt     Positionsschätzung, Farbstufen
+│   ├── TrainPosition.kt     Positionsschätzung, Streckengeometrie, Farbstufen
+│   ├── VendoApi.kt          DB-Fahrtverlauf (inoffizielle DB-Navigator-Schnittstelle)
+│   ├── VendoParser.kt       Liest deren Antworten
+│   ├── TripEnricher.kt      Verfeinert Züge mit dem Fahrtverlauf, Rückfall auf Schätzung
+│   ├── RailRouter.kt        Gleisgraph aus OpenStreetMap, Wegsuche
+│   ├── TrackRepository.kt   Lädt und speichert Gleisverläufe (Overpass)
+│   ├── SettingsStore.kt     Einstellungen
 │   └── Models.kt
 └── ui/
     ├── MainViewModel.kt     Zustand, Auto-Refresh

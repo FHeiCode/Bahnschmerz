@@ -11,6 +11,11 @@ import de.bahnlive.app.data.StationLocator
 import de.bahnlive.app.data.RouteRepository
 import de.bahnlive.app.data.RouteStore
 import de.bahnlive.app.data.SavedRoute
+import de.bahnlive.app.data.SettingsStore
+import de.bahnlive.app.data.TrackRepository
+import de.bahnlive.app.data.TripEnricher
+import de.bahnlive.app.data.VendoApi
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -33,6 +38,12 @@ data class BoardState(
     val corridor: List<String> = emptyList(),
     /** Bekannte Bahnhofskoordinaten, Schlüssel = Bahnhofsname wie in den Daten. */
     val coordinates: Map<String, LatLon> = emptyMap(),
+    /** Gleisverlauf je Abschnitt aus OpenStreetMap (leer = gerade Linien). */
+    val track: Map<Int, List<LatLon>> = emptyMap(),
+    /** Für welche Bahnhofsfolge [track] berechnet wurde. */
+    val trackFor: List<Pair<Int, LatLon>> = emptyList(),
+    /** DB-Fahrtverlauf eingeschaltet, aber gerade nicht erreichbar → Schätzung aktiv. */
+    val dbTripsUnavailable: Boolean = false,
     val error: String? = null,
     val fetchedAt: LocalDateTime? = null,
 )
@@ -41,7 +52,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val store = RouteStore(app)
     private val repository = RouteRepository()
     private val locator = StationLocator(app)
+    private val settings = SettingsStore(app)
+    private val vendo = VendoApi(app)
+    private val enricher = TripEnricher(vendo)
+    private val tracks = TrackRepository(app)
     private var geocodeJob: Job? = null
+    private var trackJob: Job? = null
+
+    /** Genauere Positionen über den DB-Fahrtverlauf (Einstellung). */
+    val useDbTrips: StateFlow<Boolean> =
+        settings.useDbTrips.stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+    fun setUseDbTrips(enabled: Boolean) {
+        viewModelScope.launch { settings.setUseDbTrips(enabled) }
+    }
 
     val savedRoutes: StateFlow<List<SavedRoute>> =
         store.routes.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
@@ -102,21 +126,55 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun load(route: SavedRoute) {
         _board.update { it?.copy(loading = true) }
         val result = repository.connections(route)
-        _board.update { current ->
-            if (current == null || current.route != route) return@update current
-            when (result) {
-                is BoardResult.Success -> current.copy(
-                    loading = false,
-                    connections = result.connections,
-                    moving = result.moving,
-                    corridor = result.corridor,
-                    error = null,
-                    fetchedAt = result.fetchedAt,
-                )
-                is BoardResult.Error -> current.copy(loading = false, error = result.message)
+        if (result is BoardResult.Success) {
+            val firstLoad = _board.value?.fetchedAt == null
+            // Beim ersten Laden sofort anzeigen, danach erst mit verfeinerten Zeiten,
+            // damit die Züge nicht zwischen Schätzung und Fahrtverlauf hin- und herspringen.
+            if (firstLoad) publish(route, result, result.moving, emptyMap(), dbUnavailable = false)
+            var moving = result.moving
+            var coords = emptyMap<String, LatLon>()
+            var unavailable = false
+            if (useDbTrips.value && result.moving.isNotEmpty()) {
+                val enriched = withTimeoutOrNull(ENRICH_TIMEOUT_MILLIS) {
+                    enricher.enrich(result.corridor, result.moving, result.fetchedAt)
+                }
+                if (enriched != null) {
+                    moving = enriched.moving
+                    coords = enriched.coordinates
+                }
+                unavailable = enriched == null || vendo.isPaused || moving.none { it.detailed }
+            }
+            publish(route, result, moving, coords, unavailable)
+        } else if (result is BoardResult.Error) {
+            _board.update { current ->
+                if (current == null || current.route != route) current
+                else current.copy(loading = false, error = result.message)
             }
         }
         resolveCoordinates()
+    }
+
+    private fun publish(
+        route: SavedRoute,
+        result: BoardResult.Success,
+        moving: List<MovingTrain>,
+        coords: Map<String, LatLon>,
+        dbUnavailable: Boolean,
+    ) {
+        _board.update { current ->
+            if (current == null || current.route != route) return@update current
+            current.copy(
+                loading = false,
+                connections = result.connections,
+                moving = moving,
+                corridor = result.corridor,
+                // Koordinaten aus dem Fahrtverlauf nur ergänzen, nicht ersetzen.
+                coordinates = coords + current.coordinates,
+                dbTripsUnavailable = dbUnavailable,
+                error = null,
+                fetchedAt = result.fetchedAt,
+            )
+        }
     }
 
     /**
@@ -135,20 +193,46 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             _board.update { it?.copy(coordinates = it.coordinates + immediate) }
         }
         val missing = names.filter { it !in immediate && !locator.knownMissing(it) }
-        if (missing.isEmpty() || geocodeJob?.isActive == true) return
+        if (missing.isEmpty()) {
+            loadTrack()
+            return
+        }
+        if (geocodeJob?.isActive == true) return
 
         // Start und Ziel zuerst – damit kann die Karte schon Züge zeigen.
         val ordered = missing.sortedBy { if (it == state.route.from || it == state.route.to) 0 else 1 }
         geocodeJob = viewModelScope.launch {
             for (name in ordered) {
                 if (_board.value?.route != state.route) break
+                if (name in (_board.value?.coordinates ?: emptyMap())) continue
                 val found = locator.locate(name) ?: continue
                 _board.update { it?.copy(coordinates = it.coordinates + (name to found)) }
+            }
+            loadTrack()
+        }
+    }
+
+    /**
+     * Lädt den Gleisverlauf aus OpenStreetMap, sobald die Koordinaten der Bahnhöfe
+     * feststehen. Einmal pro Strecke; danach aus dem Zwischenspeicher.
+     */
+    private fun loadTrack() {
+        val state = _board.value ?: return
+        val stations = state.corridor.mapIndexedNotNull { i, name -> state.coordinates[name]?.let { i to it } }
+        if (stations.size < 2 || stations.first().first != 0 || stations.last().first != state.corridor.lastIndex) return
+        if (stations == state.trackFor || trackJob?.isActive == true) return
+        trackJob = viewModelScope.launch {
+            val track = tracks.track(stations) ?: return@launch
+            _board.update {
+                if (it == null || it.route != state.route || it.corridor != state.corridor) it
+                else it.copy(track = track, trackFor = stations)
             }
         }
     }
 
     companion object {
         private const val REFRESH_MILLIS = 60_000L
+        /** So lange darf das Verfeinern dauern, sonst bleibt es bei der Schätzung. */
+        private const val ENRICH_TIMEOUT_MILLIS = 12_000L
     }
 }
