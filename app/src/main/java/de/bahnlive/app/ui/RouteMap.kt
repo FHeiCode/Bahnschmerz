@@ -198,7 +198,7 @@ private fun Legend(positions: List<TrainStatus>, trackShare: Double, trackStatus
             )
             if (trackShare > 0) {
                 Text(
-                    "Auf Gleisen: ${(trackShare * 100).toInt()} % · © OpenStreetMap",
+                    "Auf Gleisen: ${(trackShare * 100).toInt()} % · Transitous, © OpenStreetMap",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

@@ -40,6 +40,67 @@ object RailRouter {
     private const val MAX_DETOUR = 4.0
 
     /**
+     * Linienverläufe aus einer Transitous/MOTIS-Antwort (`/plan`): je Fahrt im Zug die
+     * Geometrie (`legGeometry`, „encoded polyline“). Fußwege werden ignoriert.
+     * Issue #16: Overpass ist oft überlastet; Transitous antwortet in 1–2 Sekunden.
+     */
+    fun parseMotisPlan(body: String): List<List<LatLon>> {
+        val root = json.parseToJsonElement(body) as? JsonObject ?: return emptyList()
+        val itineraries = (root["itineraries"] as? JsonArray).orEmpty() + (root["direct"] as? JsonArray).orEmpty()
+        val result = ArrayList<List<LatLon>>()
+        for (it in itineraries) {
+            val legs = ((it as? JsonObject)?.get("legs") as? JsonArray).orEmpty()
+            for (l in legs) {
+                val leg = l as? JsonObject ?: continue
+                val mode = (leg["mode"] as? JsonPrimitive)?.contentOrNull ?: continue
+                if (mode in NON_TRANSIT) continue
+                val geom = leg["legGeometry"] as? JsonObject ?: continue
+                val points = (geom["points"] as? JsonPrimitive)?.contentOrNull ?: continue
+                val precision = (geom["precision"] as? JsonPrimitive)?.contentOrNull?.toIntOrNull() ?: 6
+                val line = runCatching { decodePolyline(points, precision) }.getOrNull() ?: continue
+                // An Sprüngen trennen (wie bei der DB-Linie), damit nichts quer übers Land führt.
+                var current = ArrayList<LatLon>()
+                for (p in line) {
+                    if (current.isNotEmpty() && CorridorGeometry.distanceKm(current.last(), p) > 25.0) {
+                        if (current.size >= 2) result.add(current)
+                        current = ArrayList()
+                    }
+                    current.add(p)
+                }
+                if (current.size >= 2) result.add(current)
+            }
+        }
+        return result
+    }
+
+    private val NON_TRANSIT = setOf("WALK", "BIKE", "CAR", "RENTAL", "CAR_PARKING", "CAR_DROPOFF", "ODM", "FLEX", "DEBUG_BUS_ROUTE", "DEBUG_RAILWAY_ROUTE", "DEBUG_FERRY_ROUTE")
+
+    /** Google-„Encoded Polyline“ mit wählbarer Genauigkeit (MOTIS: 6 bzw. 7 Stellen). */
+    fun decodePolyline(encoded: String, precision: Int = 6): List<LatLon> {
+        val factor = Math.pow(10.0, precision.toDouble())
+        val result = ArrayList<LatLon>()
+        var index = 0
+        var lat = 0L
+        var lon = 0L
+        while (index < encoded.length) {
+            for (which in 0..1) {
+                var shift = 0
+                var value = 0L
+                while (true) {
+                    val b = encoded[index++].code - 63
+                    value = value or ((b and 0x1f).toLong() shl shift)
+                    shift += 5
+                    if (b < 0x20) break
+                }
+                val delta = if (value and 1L != 0L) (value shr 1).inv() else value shr 1
+                if (which == 0) lat += delta else lon += delta
+            }
+            result.add(LatLon(lat / factor, lon / factor))
+        }
+        return result
+    }
+
+    /**
      * Teilt die Bahnhöfe in Stücke von höchstens [maxKm] Luftlinie (überlappend am Rand), damit jede
      * Overpass-Abfrage klein bleibt – rund um Großstädte ist das Gleisnetz sehr dicht.
      */

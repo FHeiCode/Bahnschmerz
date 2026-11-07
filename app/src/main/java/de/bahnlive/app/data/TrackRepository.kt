@@ -14,6 +14,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.FormBody
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
@@ -39,11 +40,21 @@ class TrackRepository(context: Context) {
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         // Der Overpass-Server braucht für ein Stück oft 30–45 Sekunden.
-        .readTimeout(120, TimeUnit.SECONDS)
+        .readTimeout(90, TimeUnit.SECONDS)
         .build()
+    private val fastClient = OkHttpClient.Builder()
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .build()
+    /** Kennung mit App-Version und Kontakt (Repo), nur ASCII. */
+    private val userAgent = "BahnSchmerz/" +
+        (runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: "?") +
+        " (https://github.com/FHeiCode/Bahnschmerz)"
     private val json = Json { ignoreUnknownKeys = true }
     private val memory = HashMap<String, Map<Int, List<LatLon>>>()
     private val failed = HashMap<String, Pair<Long, TrackOutcome>>()
+    /** Transitous-Antworten je Start/Ziel – höchstens eine Anfrage pro Strecke und App-Start. */
+    private val shapesCache = HashMap<String, List<List<LatLon>>>()
     private val mutex = Mutex()
 
     /**
@@ -64,14 +75,35 @@ class TrackRepository(context: Context) {
 
         val segments = HashMap<Int, List<LatLon>>()
         var problem: String? = null
-        val parts = RailRouter.chunks(stations)
+
+        // Issue #16: Die öffentlichen Overpass-Server sind oft überlastet („at capacity“) oder
+        // antworten minutenlang nicht. Deshalb zuerst Transitous: eine Anfrage, 1–2 Sekunden,
+        // Linienverläufe der Züge zwischen Start und Ziel (aus Fahrplandaten und OSM).
+        try {
+            val a = stations.first().second
+            val b = stations.last().second
+            val shapesKey = "%.4f,%.4f>%.4f,%.4f".format(java.util.Locale.ROOT, a.lat, a.lon, b.lat, b.lon)
+            val shapes = shapesCache[shapesKey] ?: transitousShapes(a, b).also { shapesCache[shapesKey] = it }
+            segments += withContext(Dispatchers.Default) { RailRouter.segmentsFromPolylines(shapes, stations) }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            problem = "Transitous: ${e.message ?: e.javaClass.simpleName}"
+        }
+
+        // Nur für Abschnitte ohne Linienverlauf noch Overpass fragen.
+        val missing = stations.zipWithNext().map { it.first.first }.filter { it !in segments }
+        val parts = RailRouter.chunks(stations).filter { c -> c.dropLast(1).any { it.first in missing } }
+        if (missing.isEmpty()) problem = null
         for ((n, chunk) in parts.withIndex()) {
             onProgress(n, parts.size, HashMap(segments))
             try {
                 val body = fetch(RailRouter.overpassQuery(chunk.map { it.second }))
-                segments += withContext(Dispatchers.Default) {
+                val found = withContext(Dispatchers.Default) {
                     RailRouter.segments(RailRouter.parseOverpass(body), chunk)
                 }
+                // Transitous-Abschnitte behalten, Overpass füllt nur Lücken.
+                found.forEach { (k, v) -> segments.putIfAbsent(k, v) }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: IOException) {
@@ -83,7 +115,16 @@ class TrackRepository(context: Context) {
                 problem = "Fehler beim Auswerten (${e.javaClass.simpleName}: ${e.message?.take(80) ?: "-"})"
             }
         }
-        val outcome = TrackOutcome(segments, problem ?: if (segments.isEmpty()) "kein Gleisweg gefunden" else null)
+        val stillMissing = stations.zipWithNext().count { it.first.first !in segments }
+        val outcome = TrackOutcome(
+            segments,
+            when {
+                stillMissing == 0 -> null
+                problem != null -> problem
+                segments.isEmpty() -> "kein Gleisweg gefunden"
+                else -> "$stillMissing Abschnitt(e) ohne Gleisverlauf"
+            },
+        )
         if (outcome.problem == null) {
             memory[key] = segments
             writeCache(key, segments)
@@ -91,6 +132,32 @@ class TrackRepository(context: Context) {
             failed[key] = System.currentTimeMillis() to outcome
         }
         outcome
+    }
+
+    /**
+     * Fragt Transitous (MOTIS, https://transitous.org) nach direkten Zugverbindungen von [a]
+     * nach [b] und liefert deren Linienverläufe. Nutzungsregeln: quelloffen, nicht kommerziell,
+     * eigene Kennung mit Kontakt, sichtbarer Quellenhinweis – alles erfüllt. Eine Anfrage
+     * pro Strecke; das Ergebnis wird 30 Tage gespeichert.
+     */
+    private suspend fun transitousShapes(a: LatLon, b: LatLon): List<List<LatLon>> = withContext(Dispatchers.IO) {
+        val url = TRANSITOUS.toHttpUrl().newBuilder()
+            .addQueryParameter("fromPlace", "%.6f,%.6f".format(java.util.Locale.ROOT, a.lat, a.lon))
+            .addQueryParameter("toPlace", "%.6f,%.6f".format(java.util.Locale.ROOT, b.lat, b.lon))
+            .addQueryParameter("transitModes", "RAIL")
+            .addQueryParameter("maxTransfers", "0")
+            .build()
+        val request = Request.Builder()
+            .url(url)
+            .header("User-Agent", userAgent)
+            .header("Accept", "application/json")
+            .get()
+            .build()
+        fastClient.newCall(request).execute().use { r ->
+            val body = r.body?.string().orEmpty()
+            if (!r.isSuccessful) throw IOException("HTTP ${r.code}")
+            RailRouter.parseMotisPlan(body)
+        }
     }
 
     /** Fragt die Overpass-Server der Reihe nach, bis einer eine gültige Antwort liefert. */
@@ -115,15 +182,15 @@ class TrackRepository(context: Context) {
                     }
                 }
             } catch (e: IOException) {
-                last = "nicht erreichbar"
+                last = "nicht erreichbar (${e.javaClass.simpleName})"
             }
         }
         throw IOException(last)
     }
 
     private fun key(stations: List<Pair<Int, LatLon>>): String {
-        // "v5": seit 1.5.5 Rechteck-Abfragen – ältere, meist lückenhafte Einträge verwerfen.
-        val text = "v5|" + stations.joinToString(";") { (i, p) -> "%d:%.4f,%.4f".format(java.util.Locale.ROOT, i, p.lat, p.lon) }
+        // "v6": seit 1.5.8 Transitous + Overpass – ältere, meist lückenhafte Einträge verwerfen.
+        val text = "v6|" + stations.joinToString(";") { (i, p) -> "%d:%.4f,%.4f".format(java.util.Locale.ROOT, i, p.lat, p.lon) }
         return MessageDigest.getInstance("SHA-1").digest(text.toByteArray())
             .joinToString("") { "%02x".format(it) }
     }
@@ -157,7 +224,9 @@ class TrackRepository(context: Context) {
             "https://overpass-api.de/api/interpreter",
             "https://overpass.private.coffee/api/interpreter",
             "https://overpass.kumi.systems/api/interpreter",
+            "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
         )
+        private const val TRANSITOUS = "https://api.transitous.org/api/v5/plan"
         private const val MAX_AGE_MILLIS = 30L * 24 * 60 * 60 * 1000
         private const val RETRY_MILLIS = 5 * 60_000L
     }
