@@ -89,9 +89,9 @@ ordered = [(i, coords[n]) for i, n in enumerate(corridor) if n in coords]
 for (i, a), (j, b) in zip(ordered, ordered[1:]):
     print(f"      {corridor[i]} -> {corridor[j]}: {km(a, b):.1f} km Luftlinie")
 
-# ---------- 3. Overpass: Varianten mit Rechteck statt Schlauch ----------
-print("\n[3] Overpass-Varianten (Rechteck je Stück)")
-def chunks(stations, max_km=60.0):  # wie RailRouter.chunks
+# ---------- 3. Zeitmessung: Stückgröße x Server ----------
+print("\n[3] Antwortzeiten je Server und Stückgröße")
+def chunks(stations, max_km):
     out, start = [], 0
     while start < len(stations) - 1:
         end = start + 1; d = km(stations[start][1], stations[end][1])
@@ -101,75 +101,27 @@ def chunks(stations, max_km=60.0):  # wie RailRouter.chunks
             d += nx; end += 1
         out.append(stations[start:end + 1]); start = end
     return out
-def bbox(st):
+def bbox(st, min_margin, frac):
     lats = [p[0] for _, p in st]; lons = [p[1] for _, p in st]
     span = max(km((min(lats), min(lons)), (max(lats), max(lons))), 1)
-    m_km = max(10.0, span * 0.3)
+    m_km = max(min_margin, span * frac)
     dlat = m_km / 110.57; dlon = m_km / (111.32 * math.cos(math.radians(sum(lats) / len(lats))))
     return f"{min(lats)-dlat:.4f},{min(lons)-dlon:.4f},{max(lats)+dlat:.4f},{max(lons)+dlon:.4f}"
-VARIANTS = {
-    "A alle Gleise ohne Abstell": lambda bb: f'[out:json][timeout:90];way["railway"="rail"]["service"!~"^(yard|siding|spur)$"]({bb});out skel geom;',
-}
 SERVERS = ["https://overpass-api.de/api/interpreter", "https://overpass.private.coffee/api/interpreter",
-           "https://overpass.kumi.systems/api/interpreter"]
-def fetch(q):
-    for s in SERVERS:
-        st, body, dt = get(s, {"Content-Type": "application/x-www-form-urlencoded"},
-                           urllib.parse.urlencode({"data": q}).encode(), "POST", 120)
-        remark = re.search(r'"remark"\s*:\s*"([^"]*)"', body or "")
-        print(f"      {s.split('/')[2]}: HTTP {st}, {len(body)//1024} KB, {dt:.1f}s" + (f", remark: {remark.group(1)[:100]}" if remark else ""))
-        if st == 200 and body.lstrip().startswith("{") and not (remark and "error" in remark.group(1)):
-            return json.loads(body)
-    return None
-def route(data, c):
-    idx, pts, adj = {}, [], []
-    def node(nid, p):
-        if nid not in idx: idx[nid] = len(pts); pts.append(p); adj.append([])
-        return idx[nid]
-    for w in data.get("elements", []):
-        ids, geom = w.get("nodes"), w.get("geometry")
-        if w.get("type") != "way" or not ids or not geom or len(ids) != len(geom): continue
-        prev = node(ids[0], (geom[0]["lat"], geom[0]["lon"]))
-        for k in range(1, len(ids)):
-            cur = node(ids[k], (geom[k]["lat"], geom[k]["lon"]))
-            if cur != prev:
-                d = km(pts[prev], pts[cur]); adj[prev].append((cur, d)); adj[cur].append((prev, d))
-            prev = cur
-    found = 0
-    for (i, a), (j, b) in zip(c, c[1:]):
-        da = sorted((km(a, p), n) for n, p in enumerate(pts)); db = sorted((km(b, p), n) for n, p in enumerate(pts))
-        if not da or da[0][0] > 1.5 or db[0][0] > 1.5:
-            print(f"        {corridor[i]} -> {corridor[j]}: Bahnhof zu weit vom Gleis"); continue
-        src = {n: d for d, n in da if d <= da[0][0] + 0.25}; dst = {n: d for d, n in db if d <= db[0][0] + 0.25}
-        dist = dict(src); heap = [(d, n) for n, d in src.items()]; heapq.heapify(heap)
-        best_t, best_d = None, 1e18; straight = km(a, b); limit = straight * 4 + 5
-        while heap:
-            d, u = heapq.heappop(heap)
-            if d > dist.get(u, 1e18): continue
-            if d >= best_d or d > limit: break
-            if u in dst and d + dst[u] < best_d: best_d, best_t = d + dst[u], u
-            for v, w_ in adj[u]:
-                nd = d + w_
-                if nd < dist.get(v, 1e18): dist[v] = nd; heapq.heappush(heap, (nd, v))
-        if best_t is None: print(f"        {corridor[i]} -> {corridor[j]}: KEIN WEG (Luftlinie {straight:.1f} km)")
-        else:
-            found += 1; print(f"        {corridor[i]} -> {corridor[j]}: Weg {best_d:.1f} km (Luftlinie {straight:.1f} km)")
-    return found, len(pts)
-for name, mk in VARIANTS.items():
-    print(f"  Variante {name}")
-    total = ok = 0
-    for c in chunks(ordered):
-        bb = bbox(c)
-        print(f"    Stück {corridor[c[0][0]]} .. {corridor[c[-1][0]]}  bbox {bb}")
-        data = fetch(mk(bb)); total += len(c) - 1
-        import os; os.makedirs("out", exist_ok=True)
-        if data:
-            json.dump(data, open(f"out/chunk_{c[0][0]}.json", "w"))
-        if not data: print("      -> KEINE DATEN"); continue
-        f, n = route(data, c); ok += f
-        print(f"      Graph {n} Knoten, {f} von {len(c)-1} verbunden")
-        time.sleep(3)
-    print(f"  ERGEBNIS {name}: {ok} von {total} Abschnitten mit Gleisweg\n")
+           "https://overpass.kumi.systems/api/interpreter", "https://maps.mail.ru/osm/tools/overpass/api/interpreter"]
+os_ = __import__("os"); os_.makedirs("out", exist_ok=True)
+for label, max_km, mm, fr in [("60 km / Rand 10", 60, 10, 0.3), ("25 km / Rand 6", 25, 6, 0.25)]:
+    parts = chunks(ordered, max_km)
+    print(f"  {label}: {len(parts)} Stücke")
+    for c in parts[:3]:
+        bb = bbox(c, mm, fr)
+        q = f'[out:json][timeout:90];way["railway"="rail"]["service"!~"^(yard|siding|spur)$"]({bb});out skel geom;'
+        for s_ in SERVERS:
+            st_, body, dt = get(s_, {"Content-Type": "application/x-www-form-urlencoded"},
+                                urllib.parse.urlencode({"data": q}).encode(), "POST", 150)
+            n = body.count('"type": "way"') + body.count('"type":"way"')
+            print(f"    {corridor[c[0][0]][:14]:14s}..{corridor[c[-1][0]][:14]:14s} {s_.split('/')[2]:28s} HTTP {st_}  {len(body)//1024:5d} KB  {dt:5.1f}s  Wege {n}" + ("" if st_ == 200 else f"  {body[:80]!r}"))
+            time.sleep(2)
 
 json.dump({"corridor": corridor, "stations": [[i, p[0], p[1]] for i, p in ordered]}, open("out/stations.json", "w"), ensure_ascii=False)
 sys.exit(0)
