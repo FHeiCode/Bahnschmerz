@@ -58,15 +58,19 @@ den Zeiten an den Bahnhöfen, in drei Stufen:
 3. Zwischen zwei bekannten Zeiten wird gleichmäßig interpoliert, fehlende Zeiten werden mit
    der Geschwindigkeit des Zuges hochgerechnet.
 
-**Gleisverlauf:** Die Positionen liegen auf den echten Gleisen. Die App lädt dafür einmal
-pro Strecke die Gleise aus OpenStreetMap (Overpass API) – in Stücken von höchstens 60 km,
-jeweils ein Rechteck mit mindestens 10 km Rand (echte Strecken weichen weit von der geraden
-Linie ab, z. B. München → Pfaffenhofen über Dachau), bei überlastetem Server über einen
-Ersatzserver. Der Server braucht pro Stück oft 30–45 Sekunden; fertige Stücke erscheinen
-sofort. Zwischen je zwei Bahnhöfen sucht sie den kürzesten Weg über das Gleisnetz;
-das Ergebnis wird 30 Tage gespeichert. Wo OSM nichts liefert, nimmt sie den Linienverlauf
-aus dem DB-Fahrtverlauf. Die Legende der Karte zeigt, wie viel der Strecke auf Gleisen
-liegt, und ggf. warum Gleise fehlen (z. B. „Server überlastet“).
+**Gleisverlauf:** Die Positionen liegen auf den echten Gleisen. Quelle ist zuerst
+[Transitous](https://transitous.org) (freier, gemeinschaftlich betriebener Fahrplandienst):
+Eine Anfrage pro Strecke liefert in 1–2 Sekunden die Linienverläufe der direkten Züge
+zwischen Start und Ziel, die App schneidet daraus die Abschnitte zwischen den Bahnhöfen.
+Nur wo dort etwas fehlt (z. B. bei „Über“ auf einer anderen Strecke), fragt sie die
+OpenStreetMap-Gleise über die Overpass API ab – diese Server sind oft überlastet (Issue #16).
+Das Ergebnis wird 30 Tage gespeichert. Die Legende der Karte zeigt, wie viel der Strecke auf
+Gleisen liegt, und ggf. warum etwas fehlt.
+
+Transitous darf nur von quelloffenen, nicht kommerziellen Projekten genutzt werden, mit
+eigener Kennung (App-Name, Version, Repo-Adresse) und sichtbarem Quellenhinweis – die App
+erfüllt das (Lizenz: MIT, Link auf [transitous.org/sources](https://transitous.org/sources/)
+auf dem Startbildschirm).
 
 Die Züge bewegen sich alle 10 Sekunden weiter; die Daten werden jede Minute neu geladen.
 
@@ -184,3 +188,8 @@ git push origin v1.2.0
 Nach wenigen Minuten liegt `Bahnschmerz-1.2.0.apk` unter **Releases**. Diesen Link kannst
 du weitergeben. Auf dem Handy muss einmalig „Installation aus unbekannten Quellen“ für den
 Browser erlaubt werden.
+
+
+## Lizenz
+
+MIT – siehe [LICENSE](LICENSE).

@@ -24,6 +24,12 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.runtime.remember
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.withLink
 import androidx.compose.ui.platform.LocalHapticFeedback
 import sh.calvin.reorderable.ReorderableItem
 import sh.calvin.reorderable.rememberReorderableLazyListState
@@ -230,8 +236,20 @@ fun RouteSelectScreen(
             }
 
             item {
+                // Quellenhinweis; Transitous verlangt einen sichtbaren Link auf seine Quellenseite.
+                val link = SpanStyle(color = MaterialTheme.colorScheme.primary, textDecoration = TextDecoration.Underline)
                 Text(
-                    "Daten: DB IRIS über dbf.finalrewind.org, DB-Fahrtverlauf, Gleise © OpenStreetMap · Aktualisierung jede Minute",
+                    buildAnnotatedString {
+                        append("Daten: DB IRIS über dbf.finalrewind.org, DB-Fahrtverlauf · Linienverläufe: ")
+                        withLink(LinkAnnotation.Url("https://transitous.org/sources/", TextLinkStyles(link))) {
+                            append("Transitous (Quellen)")
+                        }
+                        append(" · Gleise und Karte: ")
+                        withLink(LinkAnnotation.Url("https://www.openstreetmap.org/copyright", TextLinkStyles(link))) {
+                            append("© OpenStreetMap-Mitwirkende")
+                        }
+                        append(" · Aktualisierung jede Minute")
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 16.dp),
