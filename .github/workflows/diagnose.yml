@@ -5,14 +5,11 @@ on:
     branches: [diagnose]
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
   diagnose:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: München Hbf -> Nürnberg Hbf
-        run: python3 -u tools/diagnose.py "München Hbf" "Nürnberg Hbf"
+      - name: Transitous München Hbf -> Nürnberg Hbf
+        run: python3 -u tools/transitous.py
