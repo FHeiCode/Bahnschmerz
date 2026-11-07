@@ -40,6 +40,7 @@ for v in ["v5", "v4", "v3", "v2", "v1"]:
 else:
     sys.exit(0)
 print("Schlüssel:", sorted(data.keys()))
+import os; os.makedirs("tools/data", exist_ok=True); open("tools/data/motis_plan.json", "w").write(body)
 for n, it in enumerate(data.get("itineraries", [])[:4]):
     for leg in it.get("legs", []):
         if leg.get("mode") in ("WALK",): continue
