@@ -30,6 +30,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.layout.fillMaxSize
+import android.view.ViewOutlineProvider
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -101,6 +104,9 @@ fun RouteMap(state: BoardState, data: StationMapData, modifier: Modifier = Modif
         MapView(context).apply {
             setTileSource(TileSourceFactory.MAPNIK)
             setMultiTouchControls(true)
+            // Auch auf View-Ebene auf die eigene Fläche beschränken (siehe clipToBounds unten).
+            outlineProvider = ViewOutlineProvider.BOUNDS
+            clipToOutline = true
             zoomController.setVisibility(CustomZoomButtonsController.Visibility.SHOW_AND_FADEOUT)
             controller.setZoom(6.5)
             controller.setCenter(GeoPoint(51.1, 10.4)) // Deutschland
@@ -132,9 +138,12 @@ fun RouteMap(state: BoardState, data: StationMapData, modifier: Modifier = Modif
         data.geometry?.let { fitTo(mapView, it) }
     }
 
-    Box(modifier) {
+    // clipToBounds: osmdroid zeichnet beim Verschieben und Zoomen über seine eigenen Grenzen
+    // hinaus. Ohne Zuschnitt überdeckt die Karte dann Menüleiste und Reiter (Issue #14).
+    Box(modifier.clipToBounds()) {
         AndroidView(
             factory = { mapView },
+            modifier = Modifier.fillMaxSize().clipToBounds(),
             update = { map -> runCatching { render(map, state, data.geometry, positions) } },
         )
 
